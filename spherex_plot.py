@@ -6,7 +6,8 @@ from PIL import Image
 
 import spherex_process as sp
 
-PICTURE_PX = 560  # the picture is always drawn this many pixels wide
+PICTURE_MAX_PX = 820  # the picture fills its column, but never gets bigger than this (a square)
+HOVER_MAX = 100       # at most this many hover cells per side (a big patch has far more pixels than that)
 BLUE_HEX = "#4DA6FF"
 
 # Plotly's own settings: scroll wheel zooms, no Plotly logo, and the toolbar keeps only zoom in, zoom out and reset
@@ -48,26 +49,38 @@ def make_figure(rgb, ra, dec, value, value_name="brightness", smooth=True, blur=
     h, w = rgb.shape[:2]
 
     if smooth:
-        # ON: blur a little, then blow the picture up with a smooth (bicubic) stretch, so it has no hard squares
-        factor = max(2, round(640 / max(h, w)))
-        big = np.array(Image.fromarray(sp.soften(rgb, blur)).resize((w * factor, h * factor), Image.BICUBIC))
+        # ON: blur a little, then blow the picture up with a smooth (bicubic) stretch, so it has no hard squares.
+        # (A big patch is already large enough, so factor 1 = no stretch.)
+        factor = max(1, round(640 / max(h, w)))
+        smoothed = sp.soften(rgb, blur)
+        big = np.array(Image.fromarray(smoothed).resize((w * factor, h * factor), Image.BICUBIC)) if factor > 1 else smoothed
         step = 1 / factor
         first = -0.5 + step / 2  # the centre of the first small block, so the picture lines up with the pixel grid
     else:
         # OFF: the real pixels, shown as sharp squares (nearest neighbour)
         big, step, first = rgb, 1, 0
 
+    # The hover layer has one cell per real pixel. A big patch has hundreds of thousands of pixels, far too many
+    # to send to the browser, so we keep one cell for every `skip` x `skip` block of pixels (its centre pixel).
+    skip = max(1, int(np.ceil(max(h, w) / HOVER_MAX)))
+    ys, xs = np.arange(skip // 2, h, skip), np.arange(skip // 2, w, skip)
+    cells = np.ix_(ys, xs)
+    hover_value = np.nan_to_num(np.asarray(value))[cells]
+
     fig = go.Figure()
     # trace 1: the picture itself
     fig.add_trace(go.Image(z=big, x0=first, dx=step, y0=first, dy=step, hoverinfo="skip"))
-    # trace 2: an invisible layer, one cell per REAL pixel, that only exists to show the hover text
+    # trace 2: an invisible layer that only exists to show the hover text
     fig.add_trace(go.Heatmap(
-        z=np.nan_to_num(value), x=np.arange(w), y=np.arange(h),
-        text=hover_texts(ra, dec, np.nan_to_num(value), value_name),
+        z=hover_value, x=xs, y=ys,
+        text=hover_texts(np.asarray(ra)[cells], np.asarray(dec)[cells], hover_value, value_name),
         hovertemplate="%{text}<extra></extra>", showscale=False, opacity=0, zsmooth=False))
 
     fig.update_layout(
-        width=PICTURE_PX, height=round(PICTURE_PX * h / w),
+        # No fixed width: Streamlit stretches the figure to its column. The height is the most the square can be;
+        # because both axes keep a 1:1 scale (scaleanchor below), the picture is a square as wide as the
+        # column allows, and the unused space is black.
+        autosize=True, height=PICTURE_MAX_PX,
         margin=dict(l=0, r=0, t=0, b=0),
         paper_bgcolor="#000000", plot_bgcolor="#000000",
         dragmode="pan",
@@ -98,7 +111,7 @@ def show(picture_id, rgb, ra, dec, value, key, rings=None, value_name="brightnes
     """Draw the picture on the page. `picture_id` names this exact picture (for the cache), `key` is the chart's
     identity on the page (so it keeps its zoom). `rings` = ((old x, old y), (new x, new y)) or None."""
     fig = cached_figure(picture_id, rgb, ra, dec, value, value_name, smooth, blur, rings, cross)
-    st.plotly_chart(fig, width="content", theme=None, config=CONFIG, key=key)
+    st.plotly_chart(fig, width="stretch", theme=None, config=CONFIG, key=key)
     st.caption("Scroll to zoom, drag to move, double-click to reset. Hover to read the sky position and brightness.")
 
 

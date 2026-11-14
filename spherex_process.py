@@ -1,6 +1,7 @@
 """Turn the raw pictures into something we can compare: group, line up, clean, draw."""
 import numpy as np
 from scipy.ndimage import gaussian_filter, maximum_filter
+from scipy.spatial import cKDTree
 from astropy.wcs import WCS
 from reproject import reproject_interp
 
@@ -30,10 +31,18 @@ def group_by_colour(wavelengths, tolerance=0.05):
     return groups
 
 
+def reference_index(images):
+    """Which picture sets the grid for lining up: the biggest one. A picture near the edge of a detector
+    can be cut short, and we do not want one short picture to shrink the whole stack. If several pictures are
+    equally big, the first one is used."""
+    return int(np.argmax([np.asarray(img).shape[0] * np.asarray(img).shape[1] for img in images]))
+
+
 def line_up(images, headers):
-    """Re-draw every picture onto the first picture's sky grid, so a fixed star sits on the same pixel."""
-    target_wcs = WCS(headers[0])
-    shape = images[0].shape
+    """Re-draw every picture onto one sky grid (that of the biggest picture), so a fixed star sits on the same pixel."""
+    ref = reference_index(images)
+    target_wcs = WCS(headers[ref])
+    shape = images[ref].shape
     lined = []
     for img, hdr in zip(images, headers):
         out, _ = reproject_interp((img, WCS(hdr)), target_wcs, shape_out=shape)
@@ -193,20 +202,27 @@ def _peaks(img, threshold):
     return [(int(x), int(y), float(img[y, x])) for x, y in zip(xs, ys)]
 
 
-def find_movers(diff, sigma, average, min_sep=1.5, max_sep=8.0, threshold=4.0, star_ratio=3.0):
+def find_movers(diff, sigma, average, min_sep=1.5, max_sep=8.0, threshold=4.0, star_ratio=3.0, limit=200):
     """Look for a PAIR: a fainter spot (old position) and a brighter spot (new position) a few pixels apart.
 
     A fixed star that is slightly misaligned makes a pair only a pixel apart, so min_sep skips those.
     A real mover leaves its old spot fainter and its new spot brighter by about the same amount.
     `average` is the average of the two pictures. If it is much brighter than the pair near the pair's
     middle, the pair is just leftover from a bright fixed star, so it is skipped.
+    Only the `limit` strongest pairs are kept (a very big patch can have thousands of weak ones).
     """
     diff = np.nan_to_num(diff)
     new_spots = _peaks(diff, threshold * sigma)
     old_spots = _peaks(-diff, threshold * sigma)
     movers = []
+    if not new_spots or not old_spots:
+        return movers
+    # A "KD-tree" finds the old spots near each new spot quickly, so we do not compare every spot with every
+    # other one (that would take far too long on a big patch).
+    old_tree = cKDTree([(ox, oy) for ox, oy, _ in old_spots])
     for nx, ny, nval in new_spots:
-        for ox, oy, oval in old_spots:
+        for j in old_tree.query_ball_point((nx, ny), max_sep):
+            ox, oy, oval = old_spots[j]
             sep = float(np.hypot(nx - ox, ny - oy))
             balance = nval / oval
             if min_sep <= sep <= max_sep and 0.4 <= balance <= 2.5:
@@ -216,4 +232,65 @@ def find_movers(diff, sigma, average, min_sep=1.5, max_sep=8.0, threshold=4.0, s
                     continue
                 movers.append({"new": (nx, ny), "old": (ox, oy), "sep": sep,
                                "score": min(nval, oval) / sigma})
-    return sorted(movers, key=lambda m: -m["score"])
+    return sorted(movers, key=lambda m: -m["score"])[:limit]
+
+
+# ---------- the strict mover finder ----------
+# find_movers() above is deliberately loose: it lists every white-and-blue pair above 4 sigma, and on real data
+# most of those are noise. The functions below keep only the ones worth looking at.
+STRONG_SIGMA = 8.0        # a candidate this far above the noise is kept on its own
+SAME_SPOT = 2.0           # two spots closer than this (in pixels) count as "the same spot"
+EDGE_MARGIN = 5           # candidates closer than this many pixels to the picture's edge are rejected
+BAD_PIXEL_RADIUS = 3      # ... and so are candidates with missing pixels this close
+BRIGHT_STAR_SIGMA = 25.0  # ... and candidates sitting on something brighter than this many sigmas
+MAX_SHOWN = 10            # we show at most this many, the strongest first
+
+
+def pair_candidates(earlier, later):
+    """Everything we need to judge one pair of passes: the difference picture and the loose list of candidates."""
+    matched, scale = match_brightness(earlier, later)
+    diff = matched - earlier
+    average = (matched + earlier) / 2
+    sigma = noise_level(diff)
+    return dict(diff=diff, scale=scale, sigma=sigma, average=average,
+                valid=np.isfinite(diff) & np.isfinite(average),
+                movers=find_movers(diff, sigma, average, limit=500))
+
+
+def is_clean(mover, pair):
+    """False if either spot of the candidate is near the picture's edge, near missing pixels, or on a bright star."""
+    height, width = pair["average"].shape
+    r = BAD_PIXEL_RADIUS
+    for x, y in (mover["old"], mover["new"]):
+        if x < EDGE_MARGIN or y < EDGE_MARGIN or x >= width - EDGE_MARGIN or y >= height - EDGE_MARGIN:
+            return False  # too close to the edge: the picture is cut off or badly lined up there
+        if not pair["valid"][max(0, y - r):y + r + 1, max(0, x - r):x + r + 1].all():
+            return False  # missing pixels next to it, so it cannot be trusted
+        if np.nanmax(pair["average"][max(0, y - 2):y + 3, max(0, x - 2):x + 3]) > BRIGHT_STAR_SIGMA * pair["sigma"]:
+            return False  # a bright star: its leftovers look like movers
+    return True
+
+
+def _shares_a_spot(mover, other):
+    return any(np.hypot(a[0] - b[0], a[1] - b[1]) <= SAME_SPOT
+               for a in (mover["old"], mover["new"]) for b in (other["old"], other["new"]))
+
+
+def strict_movers(this_pair, other_pairs):
+    """Keep only the candidates of `this_pair` that pass all the checks.
+
+    1. Reject anything near the edge, near missing pixels or on a bright star.
+    2. Keep it only if it is 'well above the noise' (STRONG_SIGMA or more), OR if it shows up in at least two pairs
+       of passes: another pair of passes has a clean candidate that shares a spot with it (a mover leaves a trail,
+       so the new spot of one pair is the old spot of the next).
+    3. Rank by strength and keep the MAX_SHOWN strongest.
+    Each kept candidate also says how many pairs it was seen in (`seen_in`)."""
+    clean_others = [[m for m in pair["movers"] if is_clean(m, pair)] for pair in other_pairs]
+    kept = []
+    for mover in this_pair["movers"]:
+        if not is_clean(mover, this_pair):
+            continue
+        repeats = sum(any(_shares_a_spot(mover, other) for other in others) for others in clean_others)
+        if mover["score"] >= STRONG_SIGMA or repeats >= 1:
+            kept.append(dict(mover, seen_in=1 + repeats))
+    return sorted(kept, key=lambda m: -m["score"])[:MAX_SHOWN]

@@ -190,7 +190,8 @@ def download_tracked(eph, rows, size_arcmin=CUTOUT_ARCMIN):
             return None
         ra, dec = (float(x[0]) for x in eph.at(row["mjd"]))
         uri = f"https://irsa.ipac.caltech.edu/{row['uri']}?center={ra:.6f},{dec:.6f}d&size={size_deg}"
-        result = spherex_fetch._download_one(uri, SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs"))
+        result = spherex_fetch._download_one(uri, SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs"),
+                                            keep_variance=True)
         if result is None:
             return None
         result.update(mjd=row["mjd"], ra=ra, dec=dec)

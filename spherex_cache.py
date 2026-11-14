@@ -37,16 +37,73 @@ def nice_date(mjd):
 
 
 # ---------- step 1: download ----------
-@st.cache_data(show_spinner="Asking NASA's archive for pictures...", ttl=TTL)
+# The download is split in two cached steps so that the app can show a progress bar:
+#   cutout_rows   = ask the archive which pictures exist (fast)
+#   cutout_batch  = download 8 of them at once (slow). Each batch is remembered by itself.
+BATCH = 8
+
+
+@st.cache_data(ttl=TTL, show_spinner=False)
+def cutout_rows(ra, dec, size_deg, detector):
+    with timed("COMPUTED archive question (which pictures exist)"):
+        return dict(rows=spherex_fetch.cutout_rows(ra, dec, size_deg, detector), asked_at=datetime.now())
+
+
+@st.cache_data(ttl=TTL, show_spinner=False)
+def cutout_batch(rows, ra, dec):
+    with timed(f"COMPUTED download of {len(rows)} cutouts"):
+        return spherex_fetch.download_batch(list(rows), ra, dec)
+
+
+def _key(search):
+    """The numbers that identify a search for the download steps."""
+    ra, dec, size_arcmin, detector = search
+    return float(ra), float(dec), size_arcmin / 60, detector
+
+
+def ensure_pictures(search):
+    """Download every picture of a search, showing a progress bar if it really has to download.
+
+    Raises NoDataError (nothing there) or DownloadRefused (the archive would not give the cutouts, for
+    example because the patch is too big). Everything is cached, so asking again is instant."""
+    ra, dec, size_deg, detector = _key(search)
+    first_time = search not in st.session_state.setdefault("downloaded", set())
+    if first_time:
+        # Asking the archive can take 10 to 45 seconds, so say what is happening (no silent waiting)
+        with st.spinner(f"Asking NASA's archive which {search[2]} arcmin pictures exist (this can take up to a minute)..."):
+            rows = cutout_rows(ra, dec, size_deg, detector)["rows"]
+    else:
+        rows = cutout_rows(ra, dec, size_deg, detector)["rows"]
+    batches = [tuple(rows[i:i + BATCH]) for i in range(0, len(rows), BATCH)]
+    bar = st.progress(0.0, text=f"Downloading {search[2]} arcmin pictures from NASA...") if first_time else None
+    n_ok = 0
+    for k, batch in enumerate(batches):
+        n_ok += sum(r is not None for r in cutout_batch(batch, ra, dec))
+        if bar is not None:
+            bar.progress((k + 1) / len(batches),
+                         text=f"Downloading {search[2]} arcmin pictures from NASA: {min((k + 1) * BATCH, len(rows))} of {len(rows)}")
+    if bar is not None:
+        bar.empty()
+    if n_ok == 0:
+        raise spherex_fetch.DownloadRefused("Found pictures but could not download them. Check your internet.")
+    st.session_state["downloaded"].add(search)
+
+
 def get_pictures(ra, dec, size_deg, detector):
-    with timed("COMPUTED download from NASA"):
-        # we also keep the time of the download, to show "Last fetched" in the sidebar
-        return spherex_fetch.fetch_pictures(ra, dec, size_deg, detector), datetime.now()
+    """All the pictures of a search, put together from the remembered batches. Returns (pictures, time of the archive question).
+    Not cached itself: the batches already are, and this way the pictures are stored only once."""
+    found = cutout_rows(ra, dec, size_deg, detector)
+    rows = found["rows"]
+    pictures = []
+    for i in range(0, len(rows), BATCH):
+        pictures += [r for r in cutout_batch(tuple(rows[i:i + BATCH]), ra, dec) if r is not None]
+    if not pictures:
+        raise spherex_fetch.DownloadRefused("Found pictures but could not download them. Check your internet.")
+    return pictures, found["asked_at"]
 
 
 def _pictures(search):
-    ra, dec, size_arcmin, detector = search
-    return get_pictures(float(ra), float(dec), size_arcmin / 60, detector)
+    return get_pictures(*_key(search))
 
 
 @st.cache_data(ttl=TTL)
@@ -83,11 +140,13 @@ def prepared(search, tolerance, choice):
         mjds, colours = ov["mjds"], ov["colours"]
         chosen = sorted(ov["groups"][choice], key=lambda i: mjds[i])
 
-        frames = sp.line_up([pictures[i]["image"] for i in chosen], [pictures[i]["header"] for i in chosen])
+        images = [pictures[i]["image"] for i in chosen]
+        frames = sp.line_up(images, [pictures[i]["header"] for i in chosen])
         frames = np.array([sp.remove_background(f) for f in frames])
         lo, hi = sp.brightness_limits(frames)
-        # the sky position (RA, Dec) of every pixel, for the hover text
-        sky_ra, sky_dec = sp.sky_grid(pictures[chosen[0]]["header"], frames.shape[1:])
+        # all pictures are drawn on the grid of the biggest one; its header says where every pixel is on the sky
+        grid_header = pictures[chosen[sp.reference_index(images)]]["header"]
+        sky_ra, sky_dec = sp.sky_grid(grid_header, frames.shape[1:])
 
         times = mjds[chosen]
         periods = sp.assign_periods(times)
@@ -103,16 +162,26 @@ def prepared(search, tolerance, choice):
 
 # ---------- step 4: one function per tab, run only when that tab needs it ----------
 @st.cache_data(ttl=TTL)
-def difference(search, tolerance, choice, first, second):
-    """Difference tab: match brightness, subtract, look for movers."""
-    with timed("COMPUTED difference + mover finder"):
+def pair_candidates(search, tolerance, choice, i, j):
+    """The loose candidates and the difference picture for one pair of passes (i = earlier, j = later)."""
+    with timed(f"COMPUTED difference of passes {i} and {j}"):
         images = prepared(search, tolerance, choice)["period_images"]
-        matched, scale = sp.match_brightness(images[first], images[second])
-        diff = matched - images[first]
-        average = (matched + images[first]) / 2
-        sigma = sp.noise_level(diff)
-        movers = sp.find_movers(diff, sigma, average)
-        return dict(diff=diff, scale=scale, movers=movers, rgb=sp.render_difference(diff, sigma))
+        return sp.pair_candidates(images[i], images[j])
+
+
+@st.cache_data(ttl=TTL)
+def difference(search, tolerance, choice, first, second):
+    """Difference tab: match brightness, subtract, and keep only the movers that pass the strict checks.
+
+    A candidate can be 'confirmed' by the OTHER pairs of passes, so we also look at every other pair."""
+    with timed("COMPUTED strict mover finder"):
+        n_periods = prepared(search, tolerance, choice)["n_periods"]
+        this = pair_candidates(search, tolerance, choice, first, second)
+        others = [pair_candidates(search, tolerance, choice, i, j)
+                  for i in range(n_periods) for j in range(i + 1, n_periods) if {i, j} != {first, second}]
+        movers = sp.strict_movers(this, others)
+        return dict(diff=this["diff"], scale=this["scale"], movers=movers, n_loose=len(this["movers"]),
+                    rgb=sp.render_difference(this["diff"], this["sigma"]))
 
 
 @st.cache_data(ttl=TTL)
@@ -134,10 +203,11 @@ def colour_picture(search, which):
         members = np.nonzero(sp.assign_periods(mjds) == which)[0]
         if len(members) < 3:
             return dict(n_members=len(members))
-        lined = sp.line_up([pictures[i]["image"] for i in members], [pictures[i]["header"] for i in members])
+        member_images = [pictures[i]["image"] for i in members]
+        lined = sp.line_up(member_images, [pictures[i]["header"] for i in members])
         lined = np.array([sp.remove_background(f) for f in lined])
         channels, ranges = sp.colour_composite(lined, colours[members])
-        ra, dec = sp.sky_grid(pictures[members[0]]["header"], lined.shape[1:])
+        ra, dec = sp.sky_grid(pictures[members[sp.reference_index(member_images)]]["header"], lined.shape[1:])
         return dict(n_members=len(members), rgb=sp.render_rgb(channels), brightness=np.nanmean(channels, axis=0),
                     ranges=ranges, ra=ra, dec=dec)
 

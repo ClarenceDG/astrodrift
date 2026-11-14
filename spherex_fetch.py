@@ -42,17 +42,18 @@ def _download_one(uri, coord):
             header = hdulist[1].header.copy()
             image = hdulist[1].data.astype(float).copy()
             # The VARIANCE layer is the noise per pixel. Bad pixels have no usable noise value, so we blank them.
+            variance = None
             try:
-                variance = hdulist["VARIANCE"].data.astype(float)
+                variance = hdulist["VARIANCE"].data.astype(float).copy()
                 image[~np.isfinite(variance) | (variance <= 0)] = np.nan
             except (KeyError, AttributeError, ValueError):
-                pass  # no variance layer in this file; keep the image as it is
+                variance = None  # no variance layer in this file; keep the image as it is
             # work out the infrared colour (wavelength) at the target, as the IRSA tutorial does
             x, y = WCS(header).world_to_pixel(coord)
             colour_wcs = WCS(header, fobj=hdulist, key="W")
             colour_wcs.sip = None
             wavelength, _ = colour_wcs.pixel_to_world(x, y)
-            return {"image": image, "header": header,
+            return {"image": image, "header": header, "variance": variance,
                     "wavelength": float(wavelength.to(u.micrometer).value)}
     except Exception:
         return None

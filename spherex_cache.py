@@ -16,6 +16,7 @@ import streamlit as st
 from astropy.time import Time
 
 import spherex_fetch
+import spherex_follow as follow
 import spherex_process as sp
 
 TTL = 3600  # forget saved answers after an hour (NASA may have new pictures)
@@ -139,3 +140,51 @@ def colour_picture(search, which):
         ra, dec = sp.sky_grid(pictures[members[0]]["header"], lined.shape[1:])
         return dict(n_members=len(members), rgb=sp.render_rgb(channels), brightness=np.nanmean(channels, axis=0),
                     ranges=ranges, ra=ra, dec=dec)
+
+
+# ---------- Follow a moving object ----------
+@st.cache_data(ttl=TTL, show_spinner="Asking JPL Horizons and the Minor Planet Center for the predicted path...")
+def follow_path(designation, start_mjd, days):
+    """The predicted path of a named object (Horizons first, then the MPC). Raises EphemerisError if both fail."""
+    with timed("COMPUTED predicted path"):
+        return follow.get_predicted_path(designation, start_mjd, start_mjd + days)
+
+
+@st.cache_data(ttl=TTL, show_spinner=False)
+def follow_day(eph_key, _eph, day_mjd, size_arcmin):
+    """All SPHEREx pictures of one day, downloaded around the predicted position. `eph_key` names the path
+    (the path itself, _eph, is not hashed: that would be slow)."""
+    with timed(f"COMPUTED follow: find + download pictures of day {day_mjd:.0f}"):
+        rows = follow.find_exposures(_eph, day_mjd)
+        return follow.download_tracked(_eph, rows, size_arcmin)
+
+
+@st.cache_data(ttl=TTL)
+def follow_frames(run_key, _pictures):
+    """Line every tracked picture up on the object, and measure the brightness at the centre of each."""
+    with timed("COMPUTED follow: line up tracked pictures + measure spectrum"):
+        pictures = sorted(_pictures, key=lambda p: p["mjd"])
+        aligned = [follow.align_on_object(p) for p in pictures]
+        c = follow.CENTRE
+        keep = [i for i, a in enumerate(aligned) if np.isfinite(a[0][c - 2:c + 3, c - 2:c + 3]).mean() >= 0.5]
+        pictures, aligned = [pictures[i] for i in keep], [aligned[i] for i in keep]
+        if not aligned:
+            return dict(n=0)
+        frames = np.array([a[0] for a in aligned])
+        variances = [a[1] for a in aligned]
+        wavelengths = np.array([p["wavelength"] for p in pictures])
+        cleaned = np.array([f - np.nanmedian(f) for f in frames])
+        lo, hi = np.nanpercentile(cleaned, [50, 99.8])
+        wl, flux, error = follow.measure_spectrum(frames, variances, wavelengths)
+        return dict(n=len(frames), cleaned=cleaned, ra=np.array([a[2] for a in aligned]), dec=np.array([a[3] for a in aligned]),
+                    mjds=np.array([p["mjd"] for p in pictures]), wavelengths=wavelengths,
+                    dates=[nice_date(p["mjd"]) for p in pictures], lo=float(lo), hi=float(hi),
+                    spectrum=(wl, flux, error), unit=str(pictures[0]["header"].get("BUNIT", "")), frames=frames)
+
+
+@st.cache_data(ttl=TTL)
+def follow_stack(run_key, members, _frames):
+    """Median of the tracked pictures of one colour group, and how many sigmas the middle sticks out."""
+    with timed("COMPUTED follow: stack + significance"):
+        stack = follow.stack_median(_frames["frames"][list(members)])
+        return dict(stack=stack, significance=follow.detection_significance(stack))

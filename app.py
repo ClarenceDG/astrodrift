@@ -1,12 +1,16 @@
 """Astrodrift: type a spot in the sky, see what changes between NASA SPHEREx pictures."""
+import hashlib
 import time
+from datetime import date
 
 import numpy as np
 import streamlit as st
 from astropy.coordinates import SkyCoord
+from astropy.time import Time
 
 import spherex_cache as cache
 import spherex_fetch
+import spherex_follow as follow
 import spherex_plot as splot
 import spherex_process as sp
 
@@ -74,6 +78,13 @@ st.markdown("""
 @keyframes ringspin { from { stroke-dashoffset: 0; } to { stroke-dashoffset: -100; } }
 @media (prefers-reduced-motion: reduce) { .ring-load { animation: none; } }
 
+/* the honest status line of the Follow tab: always contains a sigma number */
+.status-line { border: 1px solid #1E1E22; border-radius: 8px; background: #0B0B0D; padding: 0.8rem 1rem;
+               font-size: 15px; color: #C9C9D0; }
+.status-line.yes { border-color: #4DA6FF; color: #FFFFFF; }
+.section-label { font-size: 11px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase;
+                 color: #9A9AA3; margin: 1.4rem 0 0.3rem 0; }
+
 /* hide the Streamlit footer */
 footer, [data-testid="stFooter"] { visibility: hidden; height: 0; }
 </style>
@@ -120,6 +131,54 @@ def search_by_hand():
     run_search()
 
 
+def set_follow(name, eph, start_mjd, days, eph_key):
+    """Remember the predicted path and the dates, so the Follow tab can use them."""
+    st.session_state.follow = dict(name=name, eph=eph, start_mjd=start_mjd, days=days, eph_key=eph_key)
+    st.session_state.pop("follow_result", None)  # pictures found for an older path are no longer valid
+
+
+@st.fragment
+def follow_controls():
+    """Sidebar: name the object, choose the dates, get its predicted path (or paste one)."""
+    name = st.text_input("Designation", "2026 ED138", key="follow_name")
+    start_date = st.date_input("Start date", value=date(2026, 3, 12), key="follow_start")
+    days = st.slider("Days to follow (60 at most)", 1, 60, 30, key="follow_days")
+    start_mjd = int(Time(start_date.isoformat()).mjd)
+
+    if st.button("Get predicted path", type="primary", width="stretch", key="follow_get"):
+        try:
+            eph = cache.follow_path(name.strip(), start_mjd, days)
+        except follow.EphemerisError as problem:
+            st.session_state.follow_problem = str(problem)
+        else:
+            st.session_state.follow_problem = ""
+            set_follow(name.strip(), eph, start_mjd, days, f"path|{name.strip().lower()}|{start_mjd}|{days}")
+            st.rerun(scope="app")  # the Follow tab (outside this fragment) must update too
+    if st.session_state.get("follow_problem"):
+        st.warning(f"Could not get the path from the internet ({st.session_state.follow_problem}). "
+                   "Paste a table below instead.")
+    paste_on = st.toggle("Paste my own ephemeris table", key="follow_use_paste")
+    if paste_on or st.session_state.get("follow_problem"):
+        text = st.text_area("Or paste an ephemeris table", key="follow_paste", height=150,
+                            placeholder="2026 01 01 000000 18 12 56.1 -42 17 07\n2026 01 02 000000 18 12 58.3 -42 17 40",
+                            help="MPC format: the date as YYYY MM DD HHMMSS, then R.A. as h m s and Dec. as d m s.")
+        if st.button("Use the pasted table", width="stretch", key="follow_use_table"):
+            try:
+                eph = follow.parse_mpc_table(text)
+            except follow.EphemerisError as problem:
+                st.error(str(problem))
+            else:
+                first, last = int(np.ceil(eph.start)), int(np.floor(eph.stop))
+                start, stop = max(start_mjd, first), min(start_mjd + days, last)
+                if stop <= start:
+                    st.error(f"The table covers {cache.nice_date(eph.start)} to {cache.nice_date(eph.stop)}. "
+                             "Change the start date so the dates overlap.")
+                else:
+                    key = hashlib.sha1(text.encode()).hexdigest()[:12]
+                    set_follow(name.strip(), eph, start, stop - start, f"paste|{key}|{start}|{stop}")
+                    st.rerun(scope="app")
+
+
 # starting values for the inputs (set once, before the inputs exist)
 st.session_state.setdefault("ra_in", "133.79513")
 st.session_state.setdefault("dec_in", "-7.24515")
@@ -152,6 +211,8 @@ with st.sidebar:
     # filled in further down, once the pictures are loaded (this keeps them in the right place on screen)
     colour_box = st.container()
     advanced = st.expander("Advanced")
+    with st.expander("Follow a moving object"):
+        follow_controls()
     footer_box = st.container()
 
 # remember the search, so moving the slider doesn't forget it
@@ -325,14 +386,107 @@ def colour_tab(search, tolerance, blur):
             "Use the Difference tab to decide what is a mover.")
 
 
+@st.fragment
+def follow_tab(blur):
+    """Follow tab: the tracked pictures, their stack, their spectrum, and an honest status line."""
+    state = st.session_state.get("follow")
+    if not state:
+        st.info("Open **Follow a moving object** in the sidebar, type a designation and press **Get predicted path**.")
+        return
+    eph, start_mjd, days = state["eph"], state["start_mjd"], state["days"]
+    run_key = f"{state['eph_key']}|{follow.CUTOUT_ARCMIN}"
+    ra0, dec0 = (float(x[0]) for x in eph.at(start_mjd))
+    st.caption(f"{state['name']} | path from {eph.source} | {cache.nice_date(start_mjd)} to "
+               f"{cache.nice_date(start_mjd + days)} ({days} days) | first position RA {ra0:.5f}, Dec {dec0:.5f}")
+
+    if st.button("Find SPHEREx pictures", type="primary", key="follow_go"):
+        pictures, failed_days = [], 0
+        bar = st.progress(0.0, text="Asking NASA's archive, one day at a time...")
+        for k in range(days):
+            try:
+                pictures += cache.follow_day(state["eph_key"], eph, start_mjd + k, follow.CUTOUT_ARCMIN)
+            except Exception:  # one bad day (network hiccup) should not stop the whole search
+                failed_days += 1
+            bar.progress((k + 1) / days, text=f"Day {k + 1} of {days} | {len(pictures)} pictures so far")
+        bar.empty()
+        st.session_state.follow_result = dict(run_key=run_key, pictures=pictures, failed_days=failed_days)
+
+    result = st.session_state.get("follow_result")
+    if not result or result["run_key"] != run_key:
+        st.write("Press **Find SPHEREx pictures**. It searches each day in turn and can take a few minutes "
+                 "the first time. Days you have searched before are instant.")
+        return
+    if result["failed_days"]:
+        st.warning(f"{result['failed_days']} day(s) could not be searched (network problem). Press the button again to retry them.")
+    if not result["pictures"]:
+        st.info("No SPHEREx pictures cover the predicted path on these days. Try another start date.")
+        return
+
+    with cache.timed("Follow tab (fragment run)"):
+        frames = cache.follow_frames(run_key, result["pictures"])
+        if frames["n"] == 0:
+            st.info("SPHEREx pictures were found, but the object is too close to their edges to measure.")
+            return
+        n = frames["n"]
+        st.caption(f"{n} tracked pictures, {frames['dates'][0]} to {frames['dates'][-1]}. Each cutout is centred on where the "
+                   "object is predicted to be at that picture's own time, so the object is always in the middle.")
+        centre = (follow.CENTRE, follow.CENTRE)
+
+        # (a) flipbook with a crosshair on the predicted position
+        st.markdown('<div class="section-label">Flipbook of the tracked pictures</div>', unsafe_allow_html=True)
+        if st.session_state.get("follow_i", 1) > n:
+            st.session_state.follow_i = 1  # a new search with fewer pictures: keep the slider in range
+        i = (st.slider("Picture", 1, n, 1, key="follow_i") if n > 1 else 1) - 1
+        smooth = st.toggle("Smooth the picture", value=True, key="smooth_follow_flip")
+        st.caption(f"Picture {i + 1} of {n} | {frames['dates'][i]} | {frames['wavelengths'][i]:.2f} \u00b5m")
+        splot.show(picture_id("follow_flip", run_key, i), sp.to_picture(frames["cleaned"][i], frames["lo"], frames["hi"]),
+                   frames["ra"][i], frames["dec"][i], frames["cleaned"][i], key="plot_follow_flip",
+                   smooth=smooth, blur=blur, cross=centre)
+
+        # (b) stack of one colour group, and (d) the honest status line
+        st.markdown('<div class="section-label">Stack (median) of one colour</div>', unsafe_allow_html=True)
+        groups = follow.colour_groups(frames["wavelengths"])
+        if st.session_state.get("follow_group", 0) >= len(groups):
+            st.session_state.follow_group = 0
+        g = st.selectbox("Colour group", range(len(groups)), key="follow_group",
+                         format_func=lambda k: f"{frames['wavelengths'][groups[k]].mean():.2f} \u00b5m | {len(groups[k])} pictures")
+        members = groups[g]
+        stacked = cache.follow_stack(run_key, tuple(members), frames)
+        mean_colour = float(frames["wavelengths"][members].mean())
+        detected, text = follow.status_line(stacked["significance"], len(members), mean_colour)
+        st.markdown(f'<div class="status-line{" yes" if detected else ""}">{text}</div>', unsafe_allow_html=True)
+        smooth_stack = st.toggle("Smooth the picture", value=True, key="smooth_follow_stack")
+        stack = stacked["stack"]
+        lo, hi = np.nanpercentile(stack, [50, 99.8])
+        middle = members[len(members) // 2]
+        splot.show(picture_id("follow_stack", run_key, tuple(members)), sp.to_picture(stack, lo, hi),
+                   frames["ra"][middle], frames["dec"][middle], stack, key="plot_follow_stack",
+                   smooth=smooth_stack, blur=blur, cross=centre)
+        st.caption("Median of the cutouts, each with its background removed. The object adds up in the middle; stars are in "
+                   "different places in each cutout, so they smear out. The sigma number compares the middle with the "
+                   "scatter of the same circle placed elsewhere on this picture. Sky positions shown are for the middle picture.")
+
+        # (c) spectrum
+        st.markdown('<div class="section-label">Spectrum at the predicted position</div>', unsafe_allow_html=True)
+        wl, flux, error = frames["spectrum"]
+        if len(wl) == 0:
+            st.info("None of the pictures had enough good pixels around the centre to measure.")
+        else:
+            st.plotly_chart(splot.spectrum_figure(wl, flux, error, frames["unit"]), theme=None, key="plot_follow_spectrum",
+                            config={"displaylogo": False, "scrollZoom": True})
+            st.caption("Brightness in a circle of radius 2 pixels at the predicted position, with the local background "
+                       "(a ring around it) subtracted. Error bars come from the VARIANCE layer of each picture. "
+                       "If the object is not detected, these points just scatter around zero.")
+
+
 def overview_for(search, tolerance):
     ov = cache.colour_overview(search, tolerance)
     return ov["n_all"], ov["all_dates"]
 
 
-# on_change="rerun" lets each tab know if it is open (tab.open). Layers and Colour are skipped until you open them.
-tab_flip, tab_diff, tab_layers, tab_colour = st.tabs(["Flipbook", "Difference", "Layers", "Colour"],
-                                                     on_change="rerun", key="main_tabs")
+# on_change="rerun" lets each tab know if it is open (tab.open). Layers, Colour and Follow are skipped until you open them.
+tab_flip, tab_diff, tab_layers, tab_colour, tab_follow = st.tabs(
+    ["Flipbook", "Difference", "Layers", "Colour", "Follow"], on_change="rerun", key="main_tabs")
 with tab_flip:
     flipbook_tab(search, tolerance, choice, blur)
 with tab_diff:
@@ -347,5 +501,10 @@ with tab_colour:
         colour_tab(search, tolerance, blur)
     else:
         keep_alive("colour_pass", "smooth_colour")
+with tab_follow:
+    if tab_follow.open:
+        follow_tab(blur)
+    else:
+        keep_alive("follow_i", "follow_group", "smooth_follow_flip", "smooth_follow_stack")
 
 print(f"[astrodrift] FULL SCRIPT RUN: {time.perf_counter() - RUN_START:.3f} s", flush=True)

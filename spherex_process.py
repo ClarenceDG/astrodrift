@@ -52,8 +52,16 @@ def brightness_limits(frames):
     return lo, hi
 
 
-def to_picture(img, lo, hi, width=600):
+def to_picture(img, lo, hi, width=600, smooth=True):
     """Make a smooth black-and-white picture, enlarged for the screen."""
     scaled = np.clip((np.nan_to_num(img, nan=lo) - lo) / (hi - lo + 1e-9), 0, 1)
     pic = Image.fromarray((scaled * 255).astype(np.uint8))
-    return pic.resize((width, int(width * img.shape[0] / img.shape[1])), Image.BICUBIC)
+    return pic.resize((width, int(width * img.shape[0] / img.shape[1])), Image.BICUBIC if smooth else Image.NEAREST)
+
+
+def crop_centre(img, zoom):
+    """Keep only the middle part of the picture. zoom=2 keeps the middle half of the width and height."""
+    h, w = img.shape
+    ch, cw = h // zoom, w // zoom
+    y0, x0 = (h - ch) // 2, (w - cw) // 2
+    return img[y0:y0 + ch, x0:x0 + cw]

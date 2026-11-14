@@ -71,6 +71,10 @@ if len(chosen) > 1:
     n = st.slider("Picture", 1, len(chosen), 1)
 else:
     n = 1
-st.image(sp.to_picture(frames[n - 1], lo, hi), width=600,
+zoom = st.slider("Zoom (centre of the patch)", 1, 4, 1)
+smooth = st.toggle("Smooth the picture", value=True,
+                   help="Off shows the real pixels as sharp squares. On blends them.")
+shown = sp.crop_centre(frames[n - 1], zoom)
+st.image(sp.to_picture(shown, lo, hi, smooth=smooth), width=600,
          caption=f"Picture {n} of {len(chosen)} | {nice_date(mjds[chosen[n - 1]])}")
 st.caption("Fixed stars stay put. Anything that moves jumps between pictures.")

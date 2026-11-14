@@ -1,9 +1,7 @@
 """Turn the raw pictures into something we can compare: group, line up, clean, draw."""
 import numpy as np
-from PIL import ImageDraw
 from scipy.ndimage import gaussian_filter, maximum_filter
 from astropy.wcs import WCS
-from PIL import Image
 from reproject import reproject_interp
 
 
@@ -43,6 +41,13 @@ def line_up(images, headers):
     return np.array(lined)
 
 
+def sky_grid(header, shape):
+    """Sky position (RA and Dec, in degrees) of every pixel of a picture, worked out from its header (the WCS)."""
+    rows, columns = np.mgrid[:shape[0], :shape[1]]
+    ra, dec = WCS(header).pixel_to_world_values(columns, rows)
+    return ra, dec
+
+
 def remove_background(img):
     """Subtract the typical (median) brightness so only stars and changes are left."""
     return img - np.nanmedian(img)
@@ -78,34 +83,12 @@ def soften(rgb, blur):
     return gaussian_filter(rgb.astype(float), sigma=(blur, blur, 0)).clip(0, 255).astype(np.uint8)
 
 
-def to_picture(img, lo, hi, width=600, smooth=True, palette="Blue", blur=0.0):
-    """Make a coloured picture. An asinh stretch shows faint stars without blowing out bright ones."""
+def to_picture(img, lo, hi, palette="Blue"):
+    """Turn brightness numbers into a coloured picture (an array of red, green, blue numbers).
+    An asinh stretch shows faint stars without blowing out bright ones."""
     scaled = np.clip((np.nan_to_num(img, nan=lo) - lo) / (hi - lo + 1e-9), 0, 1)
     scaled = np.arcsinh(10 * scaled) / np.arcsinh(10)
-    rgb = apply_palette(scaled, palette)
-    pic = Image.fromarray(soften(rgb, blur) if smooth else rgb)
-    return pic.resize((width, int(width * img.shape[0] / img.shape[1])),
-                      Image.LANCZOS if smooth else Image.NEAREST)
-
-
-def crop_centre(img, zoom):
-    """Keep only the middle part of the picture. zoom=2 keeps the middle half of the width and height."""
-    h, w = img.shape
-    ch, cw = h // zoom, w // zoom
-    y0, x0 = (h - ch) // 2, (w - cw) // 2
-    return img[y0:y0 + ch, x0:x0 + cw]
-
-
-def crop_shape(pictures, ratio):
-    """Cut the picture (or a stack of pictures) down to a rectangle, keeping the middle.
-    ratio = width / height. 1 keeps the square, 2 gives a rectangle twice as wide as it is tall."""
-    pictures = np.asarray(pictures)
-    h, w = pictures.shape[-2:]
-    new_h = int(round(w / ratio))
-    if new_h >= h:
-        return pictures
-    y0 = (h - new_h) // 2
-    return pictures[..., y0:y0 + new_h, :]
+    return apply_palette(scaled, palette)
 
 
 # ---------- cleaner combining and brightness matching ----------
@@ -143,7 +126,7 @@ def colour_composite(frames, wavelengths):
     return channels, ranges
 
 
-def render_rgb(channels, width=600, smooth=True, blur=0.0):
+def render_rgb(channels):
     """Short = blue, middle = green, long = red. The SAME brightness scale is used for all three,
     so a star only looks red if it is really brighter at long wavelengths."""
     short, middle, long_ = channels
@@ -151,10 +134,7 @@ def render_rgb(channels, width=600, smooth=True, blur=0.0):
     lo, hi = np.nanpercentile(stack, [50, 99.8])
     scaled = np.clip((np.nan_to_num(stack) - lo) / (hi - lo + 1e-9), 0, 1)
     scaled = np.arcsinh(10 * scaled) / np.arcsinh(10)
-    rgb = (scaled * 255).astype(np.uint8)
-    pic = Image.fromarray(soften(rgb, blur) if smooth else rgb)
-    return pic.resize((width, int(width * stack.shape[0] / stack.shape[1])),
-                      Image.LANCZOS if smooth else Image.NEAREST)
+    return (scaled * 255).astype(np.uint8)
 
 
 # ---------- difference view ----------
@@ -166,20 +146,17 @@ def noise_level(img):
     return 1.4826 * np.nanmedian(np.abs(img - np.nanmedian(img)))
 
 
-def render_difference(diff, sigma, width=600, smooth=True, blur=0.0):
+def render_difference(diff, sigma):
     """Black background. Blue = got brighter (where it is now). White = got fainter (where it was)."""
     d = np.nan_to_num(diff) / (6 * sigma + 1e-12)
     blue = np.clip(d, 0, 1)[..., None] * np.array(BLUE)
     white = np.clip(-d, 0, 1)[..., None] * np.array([255, 255, 255])
-    rgb = np.clip(blue + white, 0, 255).astype(np.uint8)
-    pic = Image.fromarray(soften(rgb, blur) if smooth else rgb)
-    return pic.resize((width, int(width * diff.shape[0] / diff.shape[1])),
-                      Image.BICUBIC if smooth else Image.NEAREST)
+    return np.clip(blue + white, 0, 255).astype(np.uint8)
 
 
 # ---------- layers view ----------
-def stack_layers(pass_images, width=600, smooth=True, blur=0.0, cutoff=5.0):
-    """Stack several passes (oldest first) into one picture. Oldest layer = white, newest = blue.
+def stack_layers(pass_images, cutoff=5.0):
+    """Stack several passes (oldest first) into one picture. Returns the picture and the biggest change per pixel. Oldest layer = white, newest = blue.
 
     Step 1: make every pass match the first one in brightness.
     Step 2: the 'median' of each pixel across passes is what stays the same (the fixed stars).
@@ -191,10 +168,12 @@ def stack_layers(pass_images, width=600, smooth=True, blur=0.0, cutoff=5.0):
     matched = [pass_images[0]] + [match_brightness(pass_images[0], p)[0] for p in pass_images[1:]]
     fixed = np.nanmedian(np.array(matched), axis=0)  # what stays the same
     canvas = np.zeros(fixed.shape + (3,))
+    strongest = np.full(fixed.shape, -np.inf)  # biggest change seen in any pass (shown on hover)
     n = len(matched)
     for i, img in enumerate(matched):
         # blur a little first: a real dot is a few pixels wide, speckle noise is one pixel, so noise fades more
         left_over = gaussian_filter(np.nan_to_num(img - fixed), 1.0)
+        strongest = np.maximum(strongest, left_over)
         sigma = noise_level(left_over)
         # bright fixed stars never cancel perfectly, so near them we ask for a stronger signal
         star_leftover = 0.2 * np.clip(gaussian_filter(np.nan_to_num(fixed), 1.0), 0, None)
@@ -204,11 +183,7 @@ def stack_layers(pass_images, width=600, smooth=True, blur=0.0, cutoff=5.0):
         t = i / (n - 1) if n > 1 else 1.0  # 0 = oldest (white), 1 = newest (blue)
         colour = np.array([255, 255, 255]) * (1 - t) + np.array(BLUE) * t
         canvas = canvas * (1 - strength) + colour * strength  # newer layers paint over older ones
-    rgb = np.clip(canvas, 0, 255).astype(np.uint8)
-    # dots are tiny (1 to 2 pixels), so use only half the blur here or they melt into blobs
-    pic = Image.fromarray(soften(rgb, blur / 2) if smooth else rgb)
-    return pic.resize((width, int(width * fixed.shape[0] / fixed.shape[1])),
-                      Image.BICUBIC if smooth else Image.NEAREST)
+    return np.clip(canvas, 0, 255).astype(np.uint8), strongest
 
 
 def _peaks(img, threshold):
@@ -242,14 +217,3 @@ def find_movers(diff, sigma, average, min_sep=1.5, max_sep=8.0, threshold=4.0, s
                 movers.append({"new": (nx, ny), "old": (ox, oy), "sep": sep,
                                "score": min(nval, oval) / sigma})
     return sorted(movers, key=lambda m: -m["score"])
-
-
-def draw_pair(pic, mover, shape, ring=14):
-    """Draw a white ring on the old position and an blue ring on the new one."""
-    scale = pic.size[0] / shape[1]
-    pic = pic.copy()
-    draw = ImageDraw.Draw(pic)
-    for (x, y), colour in ((mover["old"], (255, 255, 255)), (mover["new"], BLUE)):
-        cx, cy = (x + 0.5) * scale, (y + 0.5) * scale
-        draw.ellipse([cx - ring, cy - ring, cx + ring, cy + ring], outline=colour, width=2)
-    return pic

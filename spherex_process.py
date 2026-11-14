@@ -88,6 +88,28 @@ def crop_centre(img, zoom):
     return img[y0:y0 + ch, x0:x0 + cw]
 
 
+# ---------- cleaner combining and brightness matching ----------
+def combine(frames):
+    """Combine the pictures of one pass. With 3 or more, the median ignores one-off glitches like cosmic-ray hits."""
+    frames = np.asarray(frames)
+    return np.nanmedian(frames, axis=0) if len(frames) >= 3 else np.nanmean(frames, axis=0)
+
+
+def match_brightness(reference, other):
+    """Scale `other` so the bright fixed stars agree with `reference`. Returns the scaled picture and the scale used.
+
+    If a whole pass is a little brighter or dimmer (colour, calibration), every star would leave a
+    leftover when subtracted. Matching the brightness first removes most of those leftovers.
+    """
+    bright = np.isfinite(reference) & np.isfinite(other) & (reference > np.nanpercentile(reference, 95))
+    if bright.sum() < 10:
+        return other, 1.0
+    scale = float(np.sum(reference[bright] * other[bright]) / np.sum(other[bright] ** 2))
+    if not 0.5 < scale < 2.0:
+        return other, 1.0
+    return other * scale, scale
+
+
 # ---------- infrared colour picture ----------
 def colour_composite(frames, wavelengths):
     """Split the pictures into the shortest, middle and longest colours and average each group.

@@ -6,6 +6,7 @@ Based on the IRSA tutorial "Download a collection of SPHEREx Spectral Image cuto
 import concurrent.futures
 
 import astropy.units as u
+import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.wcs import WCS
@@ -40,6 +41,12 @@ def _download_one(uri, coord):
         with fits.open(uri, cache=True) as hdulist:
             header = hdulist[1].header.copy()
             image = hdulist[1].data.astype(float).copy()
+            # The VARIANCE layer is the noise per pixel. Bad pixels have no usable noise value, so we blank them.
+            try:
+                variance = hdulist["VARIANCE"].data.astype(float)
+                image[~np.isfinite(variance) | (variance <= 0)] = np.nan
+            except (KeyError, AttributeError, ValueError):
+                pass  # no variance layer in this file; keep the image as it is
             # work out the infrared colour (wavelength) at the target, as the IRSA tutorial does
             x, y = WCS(header).world_to_pixel(coord)
             colour_wcs = WCS(header, fobj=hdulist, key="W")

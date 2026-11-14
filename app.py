@@ -50,7 +50,10 @@ except ValueError:
 # group pictures by colour, then pick the colour seen in the most passes
 mjds = np.array([p["mjd"] for p in pictures])
 colours = np.array([p["wavelength"] for p in pictures])
-groups = sp.group_by_colour(colours)
+with st.sidebar.expander("Advanced"):
+    tolerance = st.slider("Colour match tolerance (micrometres)", 0.01, 0.10, 0.03, 0.01,
+                          help="Smaller = only very similar colours are compared. Fewer pictures, fewer false differences.")
+groups = sp.group_by_colour(colours, tolerance)
 passes_per_group = [sp.assign_periods(mjds[g]).max() + 1 for g in groups]
 best = max(range(len(groups)), key=lambda i: (passes_per_group[i], len(groups[i])))
 
@@ -70,7 +73,7 @@ st.caption(f"{len(chosen)} pictures at about {colours[chosen].mean():.2f} microm
 times = mjds[chosen]
 periods = sp.assign_periods(times)
 n_periods = int(periods.max()) + 1
-period_images = [np.nanmean(frames[periods == k], axis=0) for k in range(n_periods)]
+period_images = [sp.combine(frames[periods == k]) for k in range(n_periods)]
 period_dates = [nice_date(times[periods == k].mean()) for k in range(n_periods)]
 
 tab_flip, tab_diff, tab_colour = st.tabs(["Flipbook", "Difference", "Colour"])
@@ -102,10 +105,12 @@ with tab_diff:
         if first == second:
             st.info("Pick two different passes.")
         else:
-            diff = period_images[second] - period_images[first]
-            average = (period_images[second] + period_images[first]) / 2
+            matched, scale = sp.match_brightness(period_images[first], period_images[second])
+            diff = matched - period_images[first]
+            average = (matched + period_images[first]) / 2
             sigma = sp.noise_level(diff)
             movers = sp.find_movers(diff, sigma, average)
+            st.caption(f"The later pass was scaled by {scale:.2f} so fixed stars match the earlier one.")
             smooth_diff = st.toggle("Smooth the picture", value=True, key="smooth_diff")
             pic = sp.render_difference(diff, sigma, smooth=smooth_diff)
             if movers:

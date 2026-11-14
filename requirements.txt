@@ -3,3 +3,5 @@ astropy
 astroquery
 numpy
 pandas
+reproject
+pillow

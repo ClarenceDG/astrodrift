@@ -67,14 +67,78 @@ lo, hi = sp.brightness_limits(frames)
 st.caption(f"{len(chosen)} pictures at about {colours[chosen].mean():.2f} micrometres, "
            f"{passes_per_group[choice]} pass(es), {nice_date(mjds[chosen[0]])} to {nice_date(mjds[chosen[-1]])}.")
 
-if len(chosen) > 1:
-    n = st.slider("Picture", 1, len(chosen), 1)
-else:
-    n = 1
-zoom = st.slider("Zoom (centre of the patch)", 1, 4, 1)
-smooth = st.toggle("Smooth the picture", value=True,
-                   help="Off shows the real pixels as sharp squares. On blends them.")
-shown = sp.crop_centre(frames[n - 1], zoom)
-st.image(sp.to_picture(shown, lo, hi, smooth=smooth), width=600,
-         caption=f"Picture {n} of {len(chosen)} | {nice_date(mjds[chosen[n - 1]])}")
-st.caption("Fixed stars stay put. Anything that moves jumps between pictures.")
+times = mjds[chosen]
+periods = sp.assign_periods(times)
+n_periods = int(periods.max()) + 1
+period_images = [np.nanmean(frames[periods == k], axis=0) for k in range(n_periods)]
+period_dates = [nice_date(times[periods == k].mean()) for k in range(n_periods)]
+
+tab_flip, tab_diff, tab_colour = st.tabs(["Flipbook", "Difference", "Colour"])
+
+with tab_flip:
+    mode = st.radio("Show", ["Single pictures", "Pass averages (less noise)"], horizontal=True)
+    if mode.startswith("Pass"):
+        show_frames, show_dates = period_images, period_dates
+    else:
+        show_frames, show_dates = list(frames), [nice_date(t) for t in times]
+    label = "Pass" if mode.startswith("Pass") else "Picture"
+    n = st.slider(label, 1, len(show_frames), 1) if len(show_frames) > 1 else 1
+    zoom = st.slider("Zoom (centre of the patch)", 1, 4, 1)
+    smooth = st.toggle("Smooth the picture", value=True, key="smooth_flip",
+                       help="Off shows the real pixels as sharp squares. On blends them.")
+    palette = st.radio("Colours", list(sp.PALETTES), horizontal=True)
+    shown = sp.crop_centre(show_frames[n - 1], zoom)
+    st.image(sp.to_picture(shown, lo, hi, smooth=smooth, palette=palette), width=600,
+             caption=f"{label} {n} of {len(show_frames)} | {show_dates[n - 1]}")
+    st.caption("Fixed stars stay put. Anything that moves jumps between pictures.")
+
+with tab_diff:
+    if n_periods < 2:
+        st.info("The difference view needs at least two passes in this colour. Pick another colour in the sidebar.")
+    else:
+        c1, c2 = st.columns(2)
+        first = c1.selectbox("Earlier pass", range(n_periods), index=0, format_func=lambda k: period_dates[k])
+        second = c2.selectbox("Later pass", range(n_periods), index=n_periods - 1, format_func=lambda k: period_dates[k])
+        if first == second:
+            st.info("Pick two different passes.")
+        else:
+            diff = period_images[second] - period_images[first]
+            average = (period_images[second] + period_images[first]) / 2
+            sigma = sp.noise_level(diff)
+            movers = sp.find_movers(diff, sigma, average)
+            smooth_diff = st.toggle("Smooth the picture", value=True, key="smooth_diff")
+            pic = sp.render_difference(diff, sigma, smooth=smooth_diff)
+            if movers:
+                chosen_mover = st.selectbox(
+                    "Possible movers", range(len(movers)),
+                    format_func=lambda k: f"#{k + 1}: {movers[k]['sep']:.1f} pixels apart, strength {movers[k]['score']:.0f}")
+                pic = sp.draw_pair(pic, movers[chosen_mover], diff.shape)
+            st.image(pic, width=600)
+            st.caption("Amber = brighter now (where it went). White = fainter now (where it was). "
+                       "Fixed stars cancel to black. A mover shows as a white spot next to an amber one.")
+            if not movers:
+                st.write("No white-and-amber pair stands out between these two passes.")
+
+with tab_colour:
+    all_periods = sp.assign_periods(mjds)
+    n_all = int(all_periods.max()) + 1
+    all_dates = [nice_date(mjds[all_periods == k].mean()) for k in range(n_all)]
+    which = st.selectbox("Pass", range(n_all), format_func=lambda k: all_dates[k], key="colour_pass")
+    members = np.nonzero(all_periods == which)[0]
+    if len(members) < 3:
+        st.info("This pass has fewer than 3 pictures, so I can't make a colour picture.")
+    else:
+        lined = sp.line_up([pictures[i]["image"] for i in members], [pictures[i]["header"] for i in members])
+        lined = np.array([sp.remove_background(f) for f in lined])
+        channels, ranges = sp.colour_composite(lined, colours[members])
+        smooth_c = st.toggle("Smooth the picture", value=True, key="smooth_colour")
+        st.image(sp.render_rgb(channels, smooth=smooth_c), width=600,
+                 caption=f"Infrared colour picture | {all_dates[which]} | {len(members)} pictures")
+        st.caption(
+            f"FALSE COLOUR. Blue = shortest wavelengths ({ranges[0][0]:.2f} to {ranges[0][1]:.2f} micrometres), "
+            f"green = middle ({ranges[1][0]:.2f} to {ranges[1][1]:.2f}), "
+            f"red = longest ({ranges[2][0]:.2f} to {ranges[2][1]:.2f}). "
+            "Infrared cannot be seen by eye, so these are visible colours painted on. "
+            "Red things are brighter at longer wavelengths. "
+            "These pictures were taken hours to days apart, so something that moves can show coloured fringes. "
+            "Use the Difference tab to decide what is a mover.")

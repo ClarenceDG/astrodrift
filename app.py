@@ -466,6 +466,40 @@ def layers_tab(search, tolerance, choice, blur):
 
 
 @st.fragment
+def stack_tab(search, tolerance, choice):
+    """Stack tab: every pass is a see-through layer. Switching layers on and off only re-runs this function."""
+    with cache.timed("Stack tab (fragment run)"):
+        prep = cache.prepared(search, tolerance, choice)
+        n_periods, period_dates = prep["n_periods"], prep["period_dates"]
+        if n_periods < 2:
+            st.info("The stack view needs at least two passes in this colour. Pick another colour in the sidebar.")
+            return
+        remove_fixed = st.toggle("Remove fixed stars", value=True, key="stack_remove",
+                                 help="On: the median of all passes (what never changes) is subtracted from every layer. "
+                                      "Off: the full pictures are shown.")
+        data = cache.stack(search, tolerance, choice, remove_fixed)  # remembered, so toggling layers is instant
+        colours = [sp.layer_colour(i, n_periods) for i in range(n_periods)]
+        # one checkbox per pass (labelled with its date) and one opacity slider
+        boxes = st.columns(min(n_periods, 6))
+        shown = []
+        for i in range(n_periods):
+            with boxes[i % len(boxes)]:
+                shown.append(st.checkbox(period_dates[i], value=True, key=f"stack_on_{i}"))
+        opacity = st.slider("Opacity (%)", 0, 100, 100, key="stack_opacity")
+        st.plotly_chart(splot.stack_figure(data["layers"], shown, opacity / 100, prep["sky_ra"], prep["sky_dec"],
+                                           data["strongest"]),
+                        width="stretch", theme=None, config=splot.CONFIG, key="plot_stack")
+        # the legend: a coloured square and the date of each pass
+        legend = " &nbsp; ".join(
+            f'<span style="white-space:nowrap"><span style="display:inline-block;width:12px;height:12px;'
+            f'background:rgb{c};border-radius:2px;vertical-align:-1px"></span> {d}</span>'
+            for c, d in zip(colours, period_dates))
+        st.markdown(legend, unsafe_allow_html=True)
+        st.caption("Each colour is one pass. A star that stays put looks the same in every layer. "
+                   "Something that moved shows up as separate dots in different colours.")
+
+
+@st.fragment
 def colour_tab(search, tolerance, blur):
     with cache.timed("Colour tab (fragment run)"):
         picture_col, info_col = st.columns(PICTURE_COLUMNS)
@@ -609,8 +643,8 @@ def overview_for(search, tolerance):
 
 
 # on_change="rerun" lets each tab know if it is open (tab.open). Layers, Colour and Follow are skipped until you open them.
-tab_flip, tab_diff, tab_layers, tab_colour, tab_follow = st.tabs(
-    ["Flipbook", "Difference", "Layers", "Colour", "Follow"], on_change="rerun", key="main_tabs")
+tab_flip, tab_diff, tab_layers, tab_stack, tab_colour, tab_follow = st.tabs(
+    ["Flipbook", "Difference", "Layers", "Stack", "Colour", "Follow"], on_change="rerun", key="main_tabs")
 with tab_flip:
     flipbook_tab(search, tolerance, choice, blur)
 with tab_diff:
@@ -620,6 +654,11 @@ with tab_layers:
         layers_tab(search, tolerance, choice, blur)
     else:
         keep_alive("layers_how", "layers_cutoff", "smooth_layers")
+with tab_stack:
+    if tab_stack.open:
+        stack_tab(search, tolerance, choice)
+    else:
+        keep_alive("stack_remove", "stack_opacity", *[f"stack_on_{i}" for i in range(prep["n_periods"])])
 with tab_colour:
     if tab_colour.open:
         colour_tab(search, tolerance, blur)

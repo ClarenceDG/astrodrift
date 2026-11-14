@@ -194,6 +194,15 @@ def layers(search, tolerance, choice, how_many, cutoff):
 
 
 @st.cache_data(ttl=TTL)
+def stack(search, tolerance, choice, remove_fixed):
+    """Stack tab: one see-through picture per pass (same colour group, line-up, background and brightness matching)."""
+    with timed("COMPUTED stack layers"):
+        prep = prepared(search, tolerance, choice)
+        layers, strongest = sp.stack_rgba(prep["period_images"], remove_fixed, prep["lo"], prep["hi"])
+        return dict(layers=layers, strongest=strongest)
+
+
+@st.cache_data(ttl=TTL)
 def colour_picture(search, which):
     """Colour tab: the false-colour picture of one pass (needs 3 or more pictures in that pass)."""
     with timed("COMPUTED colour composite"):

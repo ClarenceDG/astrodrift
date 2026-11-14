@@ -115,6 +115,38 @@ def show(picture_id, rgb, ra, dec, value, key, rings=None, value_name="brightnes
     st.caption("Scroll to zoom, drag to move, double-click to reset. Hover to read the sky position and brightness.")
 
 
+def stack_figure(layers, shown, opacity, ra, dec, value):
+    """The Stack tab: one see-through picture per switched-on pass, drawn on top of each other (oldest at the bottom).
+    `layers` = RGBA pictures, `shown` = list of True/False, `opacity` = 0 to 1 for all layers."""
+    h, w = layers[0].shape[:2]
+    factor = max(1, round(640 / max(h, w)))  # small patches are stretched smoothly, like in the other tabs
+    step, first = 1 / factor, -0.5 + 1 / factor / 2
+    skip = max(1, int(np.ceil(max(h, w) / HOVER_MAX)))
+    ys, xs = np.arange(skip // 2, h, skip), np.arange(skip // 2, w, skip)
+    cells = np.ix_(ys, xs)
+    hover_value = np.nan_to_num(np.asarray(value))[cells]
+    fig = go.Figure()
+    for rgba, on in zip(layers, shown):
+        if not on:
+            continue
+        big = np.array(Image.fromarray(rgba, "RGBA").resize((w * factor, h * factor), Image.BICUBIC)) if factor > 1 else rgba
+        fig.add_trace(go.Image(z=big, colormodel="rgba", x0=first, dx=step, y0=first, dy=step,
+                               opacity=opacity, hoverinfo="skip"))
+    # invisible layer on top: it only exists to show the sky position on hover
+    fig.add_trace(go.Heatmap(
+        z=hover_value, x=xs, y=ys, text=hover_texts(np.asarray(ra)[cells], np.asarray(dec)[cells], hover_value, "change"),
+        hovertemplate="%{text}<extra></extra>", showscale=False, opacity=0, zsmooth=False))
+    fig.update_layout(
+        autosize=True, height=PICTURE_MAX_PX, margin=dict(l=0, r=0, t=0, b=0),
+        paper_bgcolor="#000000", plot_bgcolor="#000000", dragmode="pan",
+        xaxis=dict(visible=False, constrain="domain", range=[-0.5, w - 0.5]),
+        yaxis=dict(visible=False, scaleanchor="x", constrain="domain", range=[h - 0.5, -0.5]),
+        uirevision="keep",
+        hoverlabel=dict(bgcolor="#0B0B0D", bordercolor="#2A2A30",
+                        font=dict(color="#FFFFFF", family="JetBrains Mono, monospace", size=12)))
+    return fig
+
+
 def spectrum_figure(wavelength, flux, error, unit=""):
     """Brightness against wavelength: blue points with error bars on black."""
     fig = go.Figure(go.Scatter(

@@ -144,6 +144,36 @@ div:has(> [role="tablist"]) { border-bottom: none; box-shadow: none; }
 .steps .d { font-size: 13px; color: var(--muted); line-height: 1.45; }
 @media (max-width: 900px) { .steps { grid-template-columns: 1fr 1fr; } .hero { flex-direction: column-reverse; align-items: flex-start; } }
 
+/* ----- start page: the title card comes alive (every animation is switched off for people who reduce motion) ----- */
+.hero .art { position: relative; }
+.hero .art::before { content: ''; position: absolute; inset: -30px; border-radius: 50%; z-index: 0;
+    background: radial-gradient(circle, rgba(77,166,255,.35), transparent 65%); opacity: .75; }
+.hero .art svg { position: relative; z-index: 1; }
+.hero .tw { position: absolute; width: 3px; height: 3px; border-radius: 50%; background: #fff; opacity: .5; pointer-events: none; }
+.hero::after { content: ''; position: absolute; top: 0; left: 0; width: 25%; height: 4px; pointer-events: none; opacity: 0;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,.85), transparent); }
+@keyframes orbit { from { stroke-dashoffset: 0; } to { stroke-dashoffset: -100; } }
+@keyframes bob { 0%, 100% { transform: translateY(-3px); } 50% { transform: translateY(3px); } }
+@keyframes glow { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
+@keyframes twinkle2 { 0%, 100% { opacity: .15; } 50% { opacity: .9; } }
+@keyframes shimmer { 0% { transform: translateX(-100%); opacity: 1; } 60%, 100% { transform: translateX(400%); opacity: 1; } }
+@keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: no-preference) {
+  .hero .orbit { animation: orbit 6s linear infinite; }
+  .hero .art svg { animation: bob 5s ease-in-out infinite; }
+  .hero .art::before { animation: glow 4s ease-in-out infinite; }
+  .hero .tw { animation-name: twinkle2; animation-iteration-count: infinite; animation-timing-function: ease-in-out; }
+  .hero::after { animation: shimmer 6s linear infinite; }
+  .hero .big-title { animation: rise .8s ease-out both; }
+}
+
+/* ----- one small twinkling four-point star in the bottom-left corner of the sidebar ----- */
+[data-testid="stSidebar"]::after { content: ''; position: absolute; left: 20px; bottom: 20px; width: 14px; height: 14px;
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath fill='%234DA6FF' d='M7 0C7.6 4.6 9.4 6.4 14 7C9.4 7.6 7.6 9.4 7 14C6.4 9.4 4.6 7.6 0 7C4.6 6.4 6.4 4.6 7 0Z'/%3E%3C/svg%3E") center / contain no-repeat;
+    filter: drop-shadow(0 0 8px rgba(77,166,255,.7)); pointer-events: none; z-index: 0; }
+@keyframes twinkle { 0%, 100% { opacity: .5; transform: scale(.5); } 50% { opacity: 1; transform: scale(1); } }
+@media (prefers-reduced-motion: no-preference) { [data-testid="stSidebar"]::after { animation: twinkle 3s ease-in-out infinite; } }
+
 /* hide the Streamlit footer */
 footer, [data-testid="stFooter"] { visibility: hidden; height: 0; }
 </style>
@@ -337,11 +367,20 @@ SATURN = ('<svg width="44" height="44" viewBox="0 0 48 48" aria-hidden="true"><g
           'stroke-linecap="round" pathLength="100" stroke-dasharray="30 70"/></g>'
           '<circle cx="24" cy="24" r="10" fill="#fff"/></svg>')
 
-BIG_SATURN = ('<svg width="220" height="220" viewBox="0 0 48 48" aria-hidden="true"><g transform="rotate(-24 24 24)">'
-              '<ellipse cx="24" cy="24" rx="22" ry="7.4" fill="none" stroke="#2a3a52" stroke-width="1.6"/>'
-              '<ellipse cx="24" cy="24" rx="22" ry="7.4" fill="none" stroke="#4DA6FF" stroke-width="1.6" '
-              'stroke-linecap="round" pathLength="100" stroke-dasharray="32 68"/></g>'
-              '<circle cx="24" cy="24" r="10.5" fill="#fff"/></svg>')
+# The ring is drawn twice: the upper half BEFORE the planet (so it passes behind it) and the lower half AFTER it
+# (so it passes in front). The blue arc runs along the whole ring, so it goes behind, then in front, as it orbits.
+RING = ('<ellipse cx="24" cy="24" rx="22" ry="7.4" fill="none" stroke="#2a3a52" stroke-width="1.6"/>'
+        '<ellipse class="orbit" cx="24" cy="24" rx="22" ry="7.4" fill="none" stroke="#4DA6FF" stroke-width="1.6" '
+        'stroke-linecap="round" pathLength="100" stroke-dasharray="32 68"/>')
+BIG_SATURN = ('<svg width="220" height="220" viewBox="0 0 48 48" aria-hidden="true">'
+              '<defs><clipPath id="ring-back"><rect x="0" y="0" width="48" height="24"/></clipPath>'
+              '<clipPath id="ring-front"><rect x="0" y="24" width="48" height="24"/></clipPath></defs>'
+              f'<g transform="rotate(-24 24 24)"><g clip-path="url(#ring-back)">{RING}</g></g>'
+              '<circle cx="24" cy="24" r="10.5" fill="#fff"/>'
+              f'<g transform="rotate(-24 24 24)"><g clip-path="url(#ring-front)">{RING}</g></g></svg>')
+# a few tiny stars inside the title card, each with its own place and speed
+TWINKLES = "".join(f'<i class="tw" style="left:{x}%;top:{y}%;animation-duration:{d}s;animation-delay:-{dl}s"></i>'
+                   for x, y, d, dl in ((97, 10, 3, 0.5), (56, 14, 5, 2), (62, 78, 7, 1), (74, 22, 4, 3), (90, 62, 6, 0), (58, 90, 3.5, 1.5)))
 if "search" in st.session_state:
     st.title("Astrodrift")
     st.caption("Type a spot in the sky. See what moves between NASA SPHEREx pictures.")
@@ -351,7 +390,7 @@ else:
                 '<div class="big-title">Astrodrift</div>'
                 '<p class="line">See what moves between NASA SPHEREx pictures</p>'
                 '<p class="hint">Pick a spot on the left and press <b>Show me the sky</b>.</p></div>'
-                f'<div class="art">{BIG_SATURN}</div></div>', unsafe_allow_html=True)
+                f'<div class="art">{BIG_SATURN}</div>{TWINKLES}</div>', unsafe_allow_html=True)
 
 with st.sidebar:
     st.markdown(f'<div class="logo-row">{SATURN}<span>Astrodrift</span></div>', unsafe_allow_html=True)

@@ -18,6 +18,7 @@ from astropy.time import Time
 import spherex_fetch
 import spherex_follow as follow
 import spherex_process as sp
+import spherex_stack as stk
 
 TTL = 3600  # forget saved answers after an hour (NASA may have new pictures)
 
@@ -153,9 +154,10 @@ def prepared(search, tolerance, choice):
         n_periods = int(periods.max()) + 1
         period_images = [sp.combine(frames[periods == k]) for k in range(n_periods)]
         period_dates = [nice_date(times[periods == k].mean()) for k in range(n_periods)]
+        period_mjds = [float(times[periods == k].mean()) for k in range(n_periods)]
         return dict(frames=frames, lo=lo, hi=hi, sky_ra=sky_ra, sky_dec=sky_dec,
                     frame_dates=[nice_date(t) for t in times], n_periods=n_periods,
-                    period_images=period_images, period_dates=period_dates,
+                    period_images=period_images, period_dates=period_dates, period_mjds=period_mjds,
                     n_chosen=len(chosen), mean_colour=float(colours[chosen].mean()),
                     first_date=nice_date(mjds[chosen[0]]), last_date=nice_date(mjds[chosen[-1]]))
 
@@ -195,11 +197,11 @@ def layers(search, tolerance, choice, how_many, cutoff):
 
 @st.cache_data(ttl=TTL)
 def stack(search, tolerance, choice, remove_fixed):
-    """Stack tab: one see-through picture per pass (same colour group, line-up, background and brightness matching)."""
-    with timed("COMPUTED stack layers"):
+    """Stack tab: one see-through picture per pass, plus the mover tracks (same colour group, line-up,
+    background removal and brightness matching as the Difference tab)."""
+    with timed("COMPUTED stack layers + mover tracks"):
         prep = prepared(search, tolerance, choice)
-        layers, strongest = sp.stack_rgba(prep["period_images"], remove_fixed, prep["lo"], prep["hi"])
-        return dict(layers=layers, strongest=strongest)
+        return stk.build(prep["period_images"], remove_fixed, prep["lo"], prep["hi"])
 
 
 @st.cache_data(ttl=TTL)

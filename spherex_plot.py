@@ -115,33 +115,53 @@ def show(picture_id, rgb, ra, dec, value, key, rings=None, value_name="brightnes
     st.caption("Scroll to zoom, drag to move, double-click to reset. Hover to read the sky position and brightness.")
 
 
-def stack_figure(layers, shown, opacity, ra, dec, value):
-    """The Stack tab: one see-through picture per switched-on pass, drawn on top of each other (oldest at the bottom).
-    `layers` = RGBA pictures, `shown` = list of True/False, `opacity` = 0 to 1 for all layers."""
-    h, w = layers[0].shape[:2]
+def stack_figure(rgb, ra, dec, value, tracks, selected, colours, dates):
+    """The Stack tab. `rgb` = the mixed layers. Every track gets a marker on each of its spots (click one to pick
+    the track). The selected track gets a ring in every layer and arrows from spot to spot; the others are dimmed."""
+    h, w = rgb.shape[:2]
     factor = max(1, round(640 / max(h, w)))  # small patches are stretched smoothly, like in the other tabs
+    big = np.array(Image.fromarray(rgb).resize((w * factor, h * factor), Image.BICUBIC)) if factor > 1 else rgb
     step, first = 1 / factor, -0.5 + 1 / factor / 2
     skip = max(1, int(np.ceil(max(h, w) / HOVER_MAX)))
     ys, xs = np.arange(skip // 2, h, skip), np.arange(skip // 2, w, skip)
     cells = np.ix_(ys, xs)
     hover_value = np.nan_to_num(np.asarray(value))[cells]
     fig = go.Figure()
-    for rgba, on in zip(layers, shown):
-        if not on:
-            continue
-        big = np.array(Image.fromarray(rgba, "RGBA").resize((w * factor, h * factor), Image.BICUBIC)) if factor > 1 else rgba
-        fig.add_trace(go.Image(z=big, colormodel="rgba", x0=first, dx=step, y0=first, dy=step,
-                               opacity=opacity, hoverinfo="skip"))
-    # invisible layer on top: it only exists to show the sky position on hover
+    fig.add_trace(go.Image(z=big, x0=first, dx=step, y0=first, dy=step, hoverinfo="skip"))
     fig.add_trace(go.Heatmap(
         z=hover_value, x=xs, y=ys, text=hover_texts(np.asarray(ra)[cells], np.asarray(dec)[cells], hover_value, "change"),
         hovertemplate="%{text}<extra></extra>", showscale=False, opacity=0, zsmooth=False))
+    shapes, notes = [], []
+    if tracks:
+        px, py, number, line_colour, fade, text = [], [], [], [], [], []
+        for n, t in enumerate(tracks, start=1):
+            for layer, (x, y) in zip(t["layers"], t["xy"]):
+                px.append(x); py.append(y); number.append(n)
+                line_colour.append("rgb%s" % (colours[layer],))
+                fade.append(1.0 if selected in (0, n) else 0.25)  # dim every track except the selected one
+                text.append(f"Track {n} | {dates[layer]}<br>click to select")
+        fig.add_trace(go.Scatter(
+            x=px, y=py, mode="markers", customdata=number, text=text, hovertemplate="%{text}<extra></extra>",
+            marker=dict(size=16, symbol="circle-open", line=dict(width=2, color=line_colour), opacity=fade),
+            showlegend=False))
+    if selected:
+        t = tracks[selected - 1]
+        for layer, (x, y) in zip(t["layers"], t["xy"]):
+            shapes.append(dict(type="circle", xref="x", yref="y", x0=x - 2.2, x1=x + 2.2, y0=y - 2.2, y1=y + 2.2,
+                               line=dict(color="rgb%s" % (colours[layer],), width=2)))
+            notes.append(dict(x=x, y=y, xref="x", yref="y", text=dates[layer], showarrow=False, yshift=-24,
+                              font=dict(color="#FFFFFF", size=11, family="JetBrains Mono, monospace")))
+        for layer1, ((x0, y0), (x1, y1)) in zip(t["layers"][1:], zip(t["xy"], t["xy"][1:])):  # coloured like the pass it points to
+            # an arrow: its head is at (x, y), its tail at (ax, ay), both in picture-pixel coordinates
+            notes.append(dict(x=x1, y=y1, ax=x0, ay=y0, xref="x", yref="y", axref="x", ayref="y",
+                              showarrow=True, arrowhead=2, arrowsize=1.4, arrowwidth=2, arrowcolor="rgb%s" % (colours[layer1],),
+                              standoff=14, startstandoff=14, text=""))
     fig.update_layout(
         autosize=True, height=PICTURE_MAX_PX, margin=dict(l=0, r=0, t=0, b=0),
-        paper_bgcolor="#000000", plot_bgcolor="#000000", dragmode="pan",
-        xaxis=dict(visible=False, constrain="domain", range=[-0.5, w - 0.5]),
-        yaxis=dict(visible=False, scaleanchor="x", constrain="domain", range=[h - 0.5, -0.5]),
-        uirevision="keep",
+        paper_bgcolor="#000000", plot_bgcolor="#000000", dragmode="pan", clickmode="event+select",
+        xaxis=dict(visible=False, constrain="domain"),
+        yaxis=dict(visible=False, autorange="reversed", scaleanchor="x", constrain="domain"),
+        shapes=shapes, annotations=notes, uirevision="keep",
         hoverlabel=dict(bgcolor="#0B0B0D", bordercolor="#2A2A30",
                         font=dict(color="#FFFFFF", family="JetBrains Mono, monospace", size=12)))
     return fig

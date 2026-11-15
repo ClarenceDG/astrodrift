@@ -37,7 +37,11 @@ def find_cutouts(ra_deg, dec_deg, size_deg, detector):
         AND p.energy_bandpassname = '{detector}'
     ORDER BY p.time_bounds_lower
     """
-    return Irsa.query_tap(query).to_table()
+    try:
+        return Irsa.query_tap(query).to_table()
+    except Exception as problem:  # the archive is down or busy (for example "502 Proxy Error")
+        raise NoDataError(f"The NASA archive (IRSA) did not answer: {str(problem)[:120]}. "
+                          "It is probably busy. Wait a minute and press the button again.") from problem
 
 
 def _download_one(uri, coord, keep_variance=False):

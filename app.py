@@ -13,6 +13,7 @@ import spherex_fetch
 import spherex_follow as follow
 import spherex_plot as splot
 import spherex_process as sp
+import spherex_stack as stk
 
 RUN_START = time.perf_counter()  # for the "full script run" time printed at the very end
 
@@ -465,38 +466,110 @@ def layers_tab(search, tolerance, choice, blur):
                        value_name="biggest change", smooth=smooth_layers, blur=blur / 2)
 
 
+def set_all_opacity():
+    """The 'All layers' slider: give every layer's own opacity slider the same value.
+    (A callback runs before the page is redrawn, which is when Streamlit allows changing a slider's value.)"""
+    for key in [k for k in st.session_state if str(k).startswith("stack_op_")]:
+        st.session_state[key] = st.session_state.stack_master
+
+
 @st.fragment
 def stack_tab(search, tolerance, choice):
-    """Stack tab: every pass is a see-through layer. Switching layers on and off only re-runs this function."""
+    """Stack tab: every pass is a see-through layer. A fixed star looks the same in every layer and cancels out;
+    a mover leaves one spot per layer, and the app links them into a track you can click.
+    It is a fragment, so touching a control here re-runs only this function."""
     with cache.timed("Stack tab (fragment run)"):
         prep = cache.prepared(search, tolerance, choice)
-        n_periods, period_dates = prep["n_periods"], prep["period_dates"]
+        n_periods, dates = prep["n_periods"], prep["period_dates"]
         if n_periods < 2:
             st.info("The stack view needs at least two passes in this colour. Pick another colour in the sidebar.")
             return
-        remove_fixed = st.toggle("Remove fixed stars", value=True, key="stack_remove",
-                                 help="On: the median of all passes (what never changes) is subtracted from every layer. "
-                                      "Off: the full pictures are shown.")
-        data = cache.stack(search, tolerance, choice, remove_fixed)  # remembered, so toggling layers is instant
         colours = [sp.layer_colour(i, n_periods) for i in range(n_periods)]
-        # one checkbox per pass (labelled with its date) and one opacity slider
-        boxes = st.columns(min(n_periods, 6))
-        shown = []
+
+        # A click on a track in the figure arrives as the chart's state. Turn it into the selected track BEFORE
+        # the selectbox below is drawn (a widget's value may only be changed before the widget exists).
+        hit = stk.clicked_track(st.session_state.get("plot_stack"))
+        if hit is not None and hit != st.session_state.get("stack_last_click"):
+            st.session_state.stack_track = hit
+        st.session_state.stack_last_click = hit
+        st.session_state.setdefault("stack_master", 70)
         for i in range(n_periods):
-            with boxes[i % len(boxes)]:
-                shown.append(st.checkbox(period_dates[i], value=True, key=f"stack_on_{i}"))
-        opacity = st.slider("Opacity (%)", 0, 100, 100, key="stack_opacity")
-        st.plotly_chart(splot.stack_figure(data["layers"], shown, opacity / 100, prep["sky_ra"], prep["sky_dec"],
-                                           data["strongest"]),
-                        width="stretch", theme=None, config=splot.CONFIG, key="plot_stack")
-        # the legend: a coloured square and the date of each pass
-        legend = " &nbsp; ".join(
-            f'<span style="white-space:nowrap"><span style="display:inline-block;width:12px;height:12px;'
-            f'background:rgb{c};border-radius:2px;vertical-align:-1px"></span> {d}</span>'
-            for c, d in zip(colours, period_dates))
-        st.markdown(legend, unsafe_allow_html=True)
-        st.caption("Each colour is one pass. A star that stays put looks the same in every layer. "
-                   "Something that moved shows up as separate dots in different colours.")
+            st.session_state.setdefault(f"stack_op_{i}", 70)
+            st.session_state.setdefault(f"stack_on_{i}", True)
+
+        top_left, top_right = st.columns(2)
+        remove_fixed = top_left.toggle("Remove fixed things", value=True, key="stack_remove",
+                                       help="On: the median of all passes (what never changes) is subtracted from every "
+                                            "layer, so fixed stars cancel. Off: the full pictures are shown.")
+        top_right.slider("All layers (opacity %)", 0, 100, key="stack_master", on_change=set_all_opacity)
+        for i in range(n_periods):
+            swatch, box, slider = st.columns([1, 3, 8], vertical_alignment="center")
+            swatch.markdown(f'<div style="width:22px;height:22px;border-radius:4px;background:rgb{colours[i]}"></div>',
+                            unsafe_allow_html=True)
+            box.checkbox(dates[i], key=f"stack_on_{i}")
+            slider.slider(f"Opacity, {dates[i]}", 0, 100, key=f"stack_op_{i}")
+
+        data = cache.stack(search, tolerance, choice, remove_fixed)  # remembered, so toggling is instant
+        tracks = data["tracks"]
+        scale = stk.pixel_scale_arcsec(prep["sky_ra"], prep["sky_dec"])
+
+        picture_col, info_col = st.columns(PICTURE_COLUMNS)
+        selected = 0
+        with info_col:
+            if tracks:
+                if st.session_state.get("stack_track", 0) > len(tracks):
+                    st.session_state.stack_track = 0  # a new search with fewer tracks: keep the value in range
+                st.markdown(f"**{len(tracks)} mover track(s)** found")
+                st.dataframe(
+                    [{"Track": n, "Passes": len(t["layers"]),
+                      "Pixels per pass": round(stk.measure(t, prep["period_mjds"], scale)["px_per_pass"], 1),
+                      "Strength (sigma)": round(t["strength"], 1)} for n, t in enumerate(tracks, start=1)],
+                    hide_index=True, width="stretch")
+                selected = st.selectbox("Selected track (or click one on the picture)", range(len(tracks) + 1),
+                                        format_func=lambda k: "None" if k == 0 else f"Track {k}", key="stack_track")
+                if selected:
+                    t = tracks[selected - 1]
+                    m = stk.measure(t, prep["period_mjds"], scale)
+                    st.caption(f"Track {selected}: {m['path_px']:.1f} pixels in total, {m['px_per_pass']:.1f} pixels per pass "
+                               f"(1 pixel = {scale:.2f} arcsec), about {m['arcsec_per_day']:.2f} arcsec per day. "
+                               f"Seen in {len(t['layers'])} passes, strength {t['strength']:.1f} sigma.")
+                    if st.button("I found a mover", type="primary", width="stretch", key="stack_found"):
+                        ra, dec = prep["sky_ra"], prep["sky_dec"]
+                        row = {"search": str(search[:2]), "strength_sigma": round(t["strength"], 1),
+                               "pixels_per_pass": round(m["px_per_pass"], 2), "arcsec_per_day": round(m["arcsec_per_day"], 3)}
+                        for layer, (x, y) in zip(t["layers"], t["xy"]):
+                            r, c = int(round(y)), int(round(x))
+                            row[f"date_{layer + 1}"] = dates[layer]
+                            row[f"ra_{layer + 1}"] = round(float(ra[r, c]), 5)
+                            row[f"dec_{layer + 1}"] = round(float(dec[r, c]), 5)
+                        st.session_state.setdefault("finds", []).append(row)
+                        st.toast("Saved to your finds.")
+            else:
+                st.write("No clear movers found.")
+                st.caption("Nothing above 5 sigma in one pass could be linked to a similar spot "
+                           f"{stk.MIN_STEP:g} to {stk.MAX_STEP:g} pixels away in the next pass. The plain layers are shown.")
+            st.caption("Each colour is one pass. A star that stays put looks the same in every layer. "
+                       "Something that moved shows up as separate dots in different colours.")
+            st.markdown(" &nbsp; ".join(
+                f'<span style="white-space:nowrap"><span style="display:inline-block;width:12px;height:12px;'
+                f'background:rgb{c};border-radius:2px;vertical-align:-1px"></span> {d}</span>'
+                for c, d in zip(colours, dates)), unsafe_allow_html=True)
+        with picture_col:
+            on = [st.session_state[f"stack_on_{i}"] for i in range(n_periods)]
+            opacity = [st.session_state[f"stack_op_{i}"] / 100 for i in range(n_periods)]
+            rgb = stk.composite(data["layers"], on, opacity)
+            fig = splot.stack_figure(rgb, prep["sky_ra"], prep["sky_dec"], data["strongest"],
+                                     tracks, selected, colours, dates)
+            st.plotly_chart(fig, width="stretch", theme=None, config=splot.CONFIG, key="plot_stack",
+                            on_select="rerun", selection_mode="points")
+            st.caption("Scroll to zoom, drag to move, double-click to reset. Click a ring to pick that track.")
+        finds = st.session_state.get("finds")
+        if finds:
+            st.markdown(f"**My finds ({len(finds)})**")
+            st.dataframe(finds, hide_index=True, width="stretch")
+            keys = sorted({k for f in finds for k in f})
+            csv = "\n".join([",".join(keys)] + [",".join(str(f.get(k, "")) for k in keys) for f in finds])
+            st.download_button("Download finds (CSV)", csv, "astrodrift_finds.csv", "text/csv")
 
 
 @st.fragment
@@ -658,7 +731,8 @@ with tab_stack:
     if tab_stack.open:
         stack_tab(search, tolerance, choice)
     else:
-        keep_alive("stack_remove", "stack_opacity", *[f"stack_on_{i}" for i in range(prep["n_periods"])])
+        keep_alive("stack_remove", "stack_master", "stack_track",
+                   *[f"stack_{kind}_{i}" for kind in ("on", "op") for i in range(prep["n_periods"])])
 with tab_colour:
     if tab_colour.open:
         colour_tab(search, tolerance, blur)

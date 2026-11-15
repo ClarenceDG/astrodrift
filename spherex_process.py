@@ -297,37 +297,16 @@ def strict_movers(this_pair, other_pairs):
 
 
 # ---------- the Stack tab: transparent layers ----------
+LAYER_STOPS = [(255, 255, 255), (0x7C, 0xFF, 0x6B), BLUE]  # oldest white FFFFFF, middle green 7CFF6B, newest blue 4DA6FF
+
+
 def layer_colour(i, n):
-    """The colour of layer i out of n: the oldest is white, the newest is blue, the ones between are blended."""
+    """The colour of layer i out of n: oldest white, middle green, newest blue. With more than three layers the
+    colours blend smoothly white -> green -> blue. With two layers you get white and blue."""
     t = i / (n - 1) if n > 1 else 1.0
-    return tuple(int(round(255 * (1 - t) + b * t)) for b in BLUE)
-
-
-def stack_rgba(pass_images, remove_fixed=True, lo=None, hi=None):
-    """One see-through (RGBA) picture per pass, oldest first. Returns the pictures and the biggest change per pixel.
-
-    Every layer is ONE flat colour (white ... blue). What changes from pixel to pixel is only the alpha
-    (how solid it is): 0 on the dark background, up to 0.9 on bright things, along a smooth asinh curve.
-    remove_fixed=True: subtract the median of all passes (the fixed stars) first, so only what changed is left.
-    remove_fixed=False: use the full pictures; `lo` and `hi` are the brightness limits shared by all layers."""
-    matched = [pass_images[0]] + [match_brightness(pass_images[0], p)[0] for p in pass_images[1:]]
-    n = len(matched)
-    if remove_fixed:
-        fixed = np.nanmedian(np.array(matched), axis=0)
-        # blur a little: noise is one pixel wide, real dots are not
-        signal = [gaussian_filter(np.nan_to_num(m - fixed), 1.0) for m in matched]
-        floors = [3 * noise_level(x) for x in signal]               # ignore anything under 3 noise-sizes
-        top = max(np.percentile(x, 99.9) for x in signal)           # the same brightness scale for every layer
-        scaled = [np.clip((x - f) / (top - f + 1e-12), 0, 1) for x, f in zip(signal, floors)]
-        strongest = np.max(signal, axis=0)
+    if n == 2:
+        a, b, f = LAYER_STOPS[0], LAYER_STOPS[2], t
     else:
-        scaled = [np.clip((np.nan_to_num(m, nan=lo) - lo) / (hi - lo + 1e-9), 0, 1) for m in matched]
-        strongest = np.nanmax(np.array(matched), axis=0)
-    layers = []
-    for i, x in enumerate(scaled):
-        alpha = 0.9 * np.arcsinh(10 * x) / np.arcsinh(10)
-        rgba = np.empty(x.shape + (4,), np.uint8)
-        rgba[..., :3] = layer_colour(i, n)
-        rgba[..., 3] = np.round(alpha * 255)
-        layers.append(rgba)
-    return layers, strongest
+        a, b = (LAYER_STOPS[0], LAYER_STOPS[1]) if t <= 0.5 else (LAYER_STOPS[1], LAYER_STOPS[2])
+        f = t * 2 if t <= 0.5 else t * 2 - 1
+    return tuple(int(round(x * (1 - f) + y * f)) for x, y in zip(a, b))

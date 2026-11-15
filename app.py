@@ -19,60 +19,100 @@ RUN_START = time.perf_counter()  # for the "full script run" time printed at the
 
 st.set_page_config(page_title="Astrodrift", layout="wide")
 
-# ---------- look and feel: one block of CSS (the language that styles web pages) ----------
-# Black, white and one blue accent (#4DA6FF). Fonts come from Google Fonts.
-st.markdown("""
+# ---------- look and feel: one function, one block of CSS (the language that styles web pages) ----------
+# Near-black page with a soft blue glow, a thin starfield, one blue accent (#4DA6FF), pill buttons and cards.
+# Nothing here changes what the app does: it only changes how it looks.
+def starfield(n=70):
+    """A CSS box-shadow list that draws n tiny white dots at fixed random places (the same ones every time)."""
+    rng = np.random.default_rng(7)
+    return ",".join(f"{rng.uniform(0, 100):.1f}vw {rng.uniform(0, 100):.1f}vh 0 0 rgba(255,255,255,{rng.uniform(.15, .5):.2f})"
+                    for _ in range(n))
+
+
+def apply_theme():
+    st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700;800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+:root { --blue: #4DA6FF; --body: #d6d9e2; --muted: #8b92a3; --line: rgba(255,255,255,.12); }
 
-/* body text = Inter. Only text elements are listed, so the icon font is left alone */
-.stApp, .stApp p, .stApp label, .stApp li, .stApp button, .stApp input,
-.stApp textarea, .stApp [data-baseweb="select"] { font-family: 'Inter', sans-serif; }
-
-/* title and headings = Space Grotesk */
-.stApp h1, .stApp h2, .stApp h3 { font-family: 'Space Grotesk', sans-serif; font-weight: 700; letter-spacing: -0.01em; }
-
-/* coordinates and numbers = JetBrains Mono */
-.stApp input, [data-testid="stMetricValue"], code { font-family: 'JetBrains Mono', monospace; }
-
-/* colours of the small text */
-[data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p { color: #9A9AA3; }
-[data-testid="stWidgetLabel"] p { color: #C9C9D0; }
-
-/* lots of empty space */
+/* ----- page: near-black, a blue glow top right, a fainter one bottom left, and a thin starfield ----- */
+.stApp { background: radial-gradient(ellipse 60% 50% at 100% 0%, rgba(77,166,255,.22), transparent 70%),
+                     radial-gradient(ellipse 50% 40% at 0% 100%, rgba(77,166,255,.10), transparent 70%), #04060b; color: var(--body); }
+.stApp::before { content: ''; position: fixed; top: 0; left: 0; width: 1px; height: 1px; pointer-events: none;
+                 z-index: 0; box-shadow: STARS; }
+[data-testid="stHeader"] { background: transparent; }
+/* the slim blue rail on the left edge of the main area (a background, so it needs no extra element) */
+[data-testid="stMain"] { background: linear-gradient(180deg, #4DA6FF, transparent) left top / 8px 100% no-repeat; }
 .block-container { padding-top: 3rem; padding-bottom: 4rem; max-width: 1400px; }
 [data-testid="stVerticalBlock"] { gap: 1rem; }
 
-/* sidebar panel */
-[data-testid="stSidebar"] { background: #0B0B0D; border-right: 1px solid #1E1E22; }
+/* ----- fonts: Inter for text, Space Grotesk for headings, JetBrains Mono for numbers ----- */
+.stApp, .stApp p, .stApp label, .stApp li, .stApp button, .stApp input,
+.stApp textarea, .stApp [data-baseweb="select"] { font-family: 'Inter', sans-serif; }
+.stApp p, .stApp li { color: var(--body); }
+.stApp h1, .stApp h2, .stApp h3, .big-title { font-family: 'Space Grotesk', sans-serif; font-weight: 800; letter-spacing: -0.02em;
+    background: linear-gradient(90deg, #ffffff, #b9dcff); -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; color: transparent; }
+.stApp input, [data-testid="stMetricValue"], code, .mono { font-family: 'JetBrains Mono', monospace; }
+[data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p { color: var(--muted); }
+[data-testid="stWidgetLabel"] p { color: var(--body); }
 
-/* buttons and inputs: 6px corners, dark borders */
-.stApp button { border-radius: 6px; }
-[data-baseweb="input"], [data-baseweb="select"] > div, [data-baseweb="base-input"] {
-    border-radius: 6px; border-color: #2A2A30; }
-[data-testid="stBaseButton-secondary"] { border: 1px solid #2A2A30; background: #0B0B0D; }
-/* the blue button has black text */
-[data-testid="stBaseButton-primary"], [data-testid="stBaseButton-primary"] p { color: #000000; font-weight: 600; }
+/* ----- the small blue kicker above each view, with a short blue line before it ----- */
+.kicker { display: flex; align-items: center; gap: .7rem; font-size: 12px; font-weight: 600; letter-spacing: .2em;
+          text-transform: uppercase; color: var(--blue); margin: .4rem 0 .2rem 0; }
+.kicker::before { content: ''; width: 30px; height: 2px; background: var(--blue); }
 
-/* cards and expanders: 8px corners */
-[data-testid="stExpander"] { border: 1px solid #1E1E22; border-radius: 8px; background: #0B0B0D; }
+/* ----- cards: the right-hand info panels, My finds, the hero and the detection card ----- */
+[class*="st-key-card_"], .card { position: relative; overflow: hidden; border: 1px solid var(--line); border-radius: 22px;
+    background: linear-gradient(160deg, rgba(255,255,255,.07), rgba(255,255,255,.02)); padding: 1.4rem 1.3rem 1.2rem 1.3rem; }
+[class*="st-key-card_"]::before, .card::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 4px;
+    background: linear-gradient(90deg, var(--blue), transparent); }
 
-/* the pictures fill their column but never get wider than 820 px (the spectrum chart is not limited) */
-.st-key-plot_flip, .st-key-plot_diff, .st-key-plot_layers, .st-key-plot_colour,
+/* ----- big numbers, like the "Not detected" card in the slides ----- */
+.stats { display: flex; flex-wrap: wrap; gap: .4rem 2rem; margin: .2rem 0 .6rem 0; }
+.stat .num { font-family: 'Space Grotesk', sans-serif; font-weight: 800; font-size: 44px; line-height: 1; color: #fff; }
+.stat .lab { font-size: 12px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--blue); margin-top: .3rem; }
+.stat.small .num { font-size: 30px; }
+
+/* ----- pictures: rounded, thin blue border, soft blue glow ----- */
+[data-testid="stPlotlyChart"] { border-radius: 18px; border: 1px solid rgba(77,166,255,.4); overflow: hidden;
+                                box-shadow: 0 0 60px rgba(77,166,255,.2); }
+.st-key-plot_flip, .st-key-plot_diff, .st-key-plot_layers, .st-key-plot_stack, .st-key-plot_colour,
 .st-key-plot_follow_flip, .st-key-plot_follow_stack { max-width: 820px; }
 
-/* small grey capital labels, like TRY A TARGET */
-.side-label { font-size: 11px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase;
-              color: #9A9AA3; margin: 0.6rem 0 0.2rem 0; }
-.side-note { font-size: 12px; color: #9A9AA3; line-height: 1.4; }
-.side-mono { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #FFFFFF; }
-.logo-row { display: flex; align-items: center; gap: 12px; margin-bottom: 0.6rem; }
-.logo-row span { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 22px; color: #FFFFFF; }
+/* ----- tabs: pills. Active = solid blue with dark text, others = outlined with blue-tinted text ----- */
+[role="tablist"] { gap: .5rem; border-bottom: none; box-shadow: none; flex-wrap: wrap; }
+div:has(> [role="tablist"]) { border-bottom: none; box-shadow: none; }
+[role="tablist"]::before, [role="tablist"]::after, div:has(> [role="tablist"])::before, div:has(> [role="tablist"])::after,
+[data-testid="stTabs"] > div::after { display: none !important; content: none !important; }
+[data-testid="stAlert"] { border-radius: 14px; border: 1px solid rgba(77,166,255,.35); background: rgba(77,166,255,.08); }
+.react-aria-SelectionIndicator, [data-baseweb="tab-highlight"], [data-baseweb="tab-border"] { display: none !important; }
+[data-testid="stTab"], button[data-baseweb="tab"] { border: 1px solid rgba(77,166,255,.5); border-radius: 999px; background: transparent;
+    padding: .35rem 1.1rem; height: auto; }
+[data-testid="stTab"] p, button[data-baseweb="tab"] p { color: #9cc9f5; font-weight: 600; }
+[data-testid="stTab"][aria-selected="true"], button[data-baseweb="tab"][aria-selected="true"] { background: var(--blue); border-color: var(--blue); }
+[data-testid="stTab"][aria-selected="true"] p, button[data-baseweb="tab"][aria-selected="true"] p { color: #04060b; }
 
-/* the five target buttons sit in a row and wrap onto the next line, like tags */
-.st-key-presets { flex-direction: row !important; flex-wrap: wrap; gap: 0.5rem !important; }
+/* ----- buttons: pills. Primary = solid blue with dark bold text. Secondary = outlined ----- */
+.stApp button { border-radius: 999px; }
+[data-testid="stBaseButton-secondary"] { border: 1px solid rgba(77,166,255,.5); background: transparent; color: #cfe6ff; }
+[data-testid="stBaseButton-secondary"]:hover { border-color: var(--blue); background: rgba(77,166,255,.12); }
+[data-testid="stBaseButton-primary"] { background: var(--blue); border: 1px solid var(--blue); }
+[data-testid="stBaseButton-primary"], [data-testid="stBaseButton-primary"] p { color: #04060b; font-weight: 700; }
+[data-baseweb="input"], [data-baseweb="select"] > div, [data-baseweb="base-input"] { border-radius: 12px; border-color: rgba(255,255,255,.14); }
+[data-testid="stExpander"] { border: 1px solid var(--line); border-radius: 16px; background: rgba(255,255,255,.03); }
+
+/* ----- sidebar: dark gradient, same pills and cards ----- */
+[data-testid="stSidebar"] { background: linear-gradient(180deg, #0b0b0d, #04060b); border-right: 1px solid rgba(255,255,255,.08); }
+.side-label { font-size: 11px; font-weight: 600; letter-spacing: .2em; text-transform: uppercase; color: var(--blue); margin: .6rem 0 .2rem 0; }
+.side-note { font-size: 12px; color: var(--muted); line-height: 1.4; }
+.side-mono { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #FFFFFF; }
+.logo-row { display: flex; align-items: center; gap: 12px; margin-bottom: .6rem; }
+.logo-row span { font-family: 'Space Grotesk', sans-serif; font-weight: 800; font-size: 22px; color: #FFFFFF; }
+/* the target buttons sit in a row and wrap onto the next line, like tags */
+.st-key-presets { flex-direction: row !important; flex-wrap: wrap; gap: .5rem !important; }
 .st-key-presets [data-testid="stElementContainer"] { width: auto !important; }
-.st-key-presets button { min-height: 2rem; padding: 0.15rem 0.7rem; }
+.st-key-presets button { min-height: 2rem; padding: .15rem .8rem; }
 .st-key-presets button p { font-size: 12px; font-weight: 600; }
 
 /* the Saturn ring: a blue arc runs round it all the time (this is the loading circle) */
@@ -80,20 +120,48 @@ st.markdown("""
 @keyframes ringspin { from { stroke-dashoffset: 0; } to { stroke-dashoffset: -100; } }
 @media (prefers-reduced-motion: reduce) { .ring-load { animation: none; } }
 
-/* the honest status line of the Follow tab: always contains a sigma number */
-.status-line { border: 1px solid #1E1E22; border-radius: 8px; background: #0B0B0D; padding: 0.8rem 1rem;
-               font-size: 15px; color: #C9C9D0; }
-.status-line.yes { border-color: #4DA6FF; color: #FFFFFF; }
-.section-label { font-size: 11px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase;
-                 color: #9A9AA3; margin: 1.4rem 0 0.3rem 0; }
+/* ----- Follow tab: the detection card, with a thin bar of measured sigma versus the 5 needed ----- */
+.detect { margin: .2rem 0 .4rem 0; }
+.detect .headline { font-family: 'Space Grotesk', sans-serif; font-weight: 800; font-size: 40px; line-height: 1.05; color: #fff; }
+.detect .headline em { font-style: normal; color: var(--blue); }
+.detect .text { font-size: 14px; color: var(--body); margin: .6rem 0 .8rem 0; }
+.detect .bar { height: 6px; border-radius: 999px; background: rgba(255,255,255,.12); overflow: hidden; }
+.detect .bar > div { height: 100%; border-radius: 999px; background: var(--blue); }
+.detect .scale { display: flex; justify-content: space-between; font-family: 'JetBrains Mono', monospace; font-size: 12px;
+                 color: var(--muted); margin-top: .35rem; }
+.section-label { font-size: 12px; font-weight: 600; letter-spacing: .2em; text-transform: uppercase; color: var(--blue); margin: 1.4rem 0 .3rem 0; }
+
+/* ----- start page ----- */
+.hero { display: flex; align-items: center; justify-content: space-between; gap: 2rem; padding: 2.4rem 2.4rem; }
+.hero .big-title { font-size: clamp(48px, 8vw, 96px); line-height: 1; margin: .4rem 0 .8rem 0; }
+.hero .line { font-size: 22px; color: var(--body); margin: 0 0 1rem 0; }
+.hero .hint { font-size: 14px; color: var(--muted); margin: 0; }
+.hero .art { flex: 0 0 auto; filter: drop-shadow(0 0 40px rgba(77,166,255,.35)); }
+.steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-top: 1rem; }
+.steps .card { padding: 1.3rem 1.2rem 1.1rem 1.2rem; }
+.steps .n { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--blue); }
+.steps .t { font-family: 'Space Grotesk', sans-serif; font-weight: 800; font-size: 28px; color: #fff; margin: .2rem 0 .3rem 0; }
+.steps .d { font-size: 13px; color: var(--muted); line-height: 1.45; }
+@media (max-width: 900px) { .steps { grid-template-columns: 1fr 1fr; } .hero { flex-direction: column-reverse; align-items: flex-start; } }
 
 /* hide the Streamlit footer */
 footer, [data-testid="stFooter"] { visibility: hidden; height: 0; }
 </style>
-""", unsafe_allow_html=True)
+""".replace("STARS", starfield()), unsafe_allow_html=True)
 
-st.title("Astrodrift")
-st.caption("Type a spot in the sky. See what moves between NASA SPHEREx pictures.")
+
+apply_theme()
+
+
+def stat_row(*items, small=False):
+    """Big numbers with a small blue label under each. items = (number, label) pairs."""
+    cells = "".join(f'<div class="stat{" small" if small else ""}"><div class="num">{num}</div><div class="lab">{label}</div></div>'
+                    for num, label in items)
+    st.markdown(f'<div class="stats">{cells}</div>', unsafe_allow_html=True)
+
+
+def kicker(text):
+    st.markdown(f'<div class="kicker">{text}</div>', unsafe_allow_html=True)
 
 
 # ---------- target presets ----------
@@ -269,6 +337,22 @@ SATURN = ('<svg width="44" height="44" viewBox="0 0 48 48" aria-hidden="true"><g
           'stroke-linecap="round" pathLength="100" stroke-dasharray="30 70"/></g>'
           '<circle cx="24" cy="24" r="10" fill="#fff"/></svg>')
 
+BIG_SATURN = ('<svg width="220" height="220" viewBox="0 0 48 48" aria-hidden="true"><g transform="rotate(-24 24 24)">'
+              '<ellipse cx="24" cy="24" rx="22" ry="7.4" fill="none" stroke="#2a3a52" stroke-width="1.6"/>'
+              '<ellipse cx="24" cy="24" rx="22" ry="7.4" fill="none" stroke="#4DA6FF" stroke-width="1.6" '
+              'stroke-linecap="round" pathLength="100" stroke-dasharray="32 68"/></g>'
+              '<circle cx="24" cy="24" r="10.5" fill="#fff"/></svg>')
+if "search" in st.session_state:
+    st.title("Astrodrift")
+    st.caption("Type a spot in the sky. See what moves between NASA SPHEREx pictures.")
+else:
+    # the start page: shown until the first search
+    st.markdown('<div class="card hero"><div><div class="kicker">NASA Space Apps · SPHEREx</div>'
+                '<div class="big-title">Astrodrift</div>'
+                '<p class="line">See what moves between NASA SPHEREx pictures</p>'
+                '<p class="hint">Pick a spot on the left and press <b>Show me the sky</b>.</p></div>'
+                f'<div class="art">{BIG_SATURN}</div></div>', unsafe_allow_html=True)
+
 with st.sidebar:
     st.markdown(f'<div class="logo-row">{SATURN}<span>Astrodrift</span></div>', unsafe_allow_html=True)
 
@@ -298,8 +382,7 @@ with st.sidebar:
 
 # remember the search, so moving the slider doesn't forget it
 if "search" not in st.session_state:
-    st.write("Pick a spot on the left and press **Show me the sky**.")
-    st.stop()
+    st.stop()  # the start page above is all there is until the first search
 
 requested = st.session_state.search  # what the sidebar asked for: (ra, dec, patch size, detector)
 try:
@@ -344,6 +427,8 @@ with footer_box:
         st.rerun()
 
 prep = cache.prepared(search, tolerance, choice)  # line up + clean + combine: done once per search and colour
+stat_row((prep["n_chosen"], "pictures"), (passes_per_group[choice], "passes"),
+         (f"{prep['mean_colour']:.2f}", "micrometres"))
 st.caption(f"{prep['n_chosen']} pictures at about {prep['mean_colour']:.2f} micrometres, "
            f"{passes_per_group[choice]} pass(es), {prep['first_date']} to {prep['last_date']}.")
 
@@ -369,11 +454,20 @@ def keep_alive(*keys):
 PICTURE_COLUMNS = [5, 2]
 
 
+def panel_columns(name):
+    """The picture on the left and, on the right, a card (a container with a key, which the CSS turns into a card)."""
+    picture_col, side = st.columns(PICTURE_COLUMNS)
+    with side:
+        card = st.container(key=f"card_{name}")
+    return picture_col, card
+
+
+
 @st.fragment
 def flipbook_tab(search, tolerance, choice, blur):
     with cache.timed("Flipbook tab (fragment run)"):
         prep = cache.prepared(search, tolerance, choice)
-        picture_col, info_col = st.columns(PICTURE_COLUMNS)
+        picture_col, info_col = panel_columns("flip")
         with info_col:
             mode = st.radio("Show", ["Single pictures", "Pass averages (less noise)"])
             if mode.startswith("Pass"):
@@ -402,7 +496,7 @@ def difference_tab(search, tolerance, choice, blur):
         if n_periods < 2:
             st.info("The difference view needs at least two passes in this colour. Pick another colour in the sidebar.")
             return
-        picture_col, info_col = st.columns(PICTURE_COLUMNS)
+        picture_col, info_col = panel_columns("diff")
         with info_col:
             first = st.selectbox("Earlier pass", range(n_periods), index=0, format_func=lambda k: period_dates[k])
             second = st.selectbox("Later pass", range(n_periods), index=n_periods - 1, format_func=lambda k: period_dates[k])
@@ -411,6 +505,8 @@ def difference_tab(search, tolerance, choice, blur):
                 return
             d = cache.difference(search, tolerance, choice, first, second)  # subtract + mover finder: remembered
             movers = d["movers"]
+            stat_row((len(movers), "candidates found"), (f"{max(m['score'] for m in movers):.0f}" if movers else "0", "sigma, strongest"),
+                     small=True)
             st.caption(f"The later pass was scaled by {d['scale']:.2f} so fixed stars match the earlier one.")
             smooth_diff = st.toggle("Smooth the picture", value=True, key="smooth_diff")
             rings = None  # the selected mover (white = was here, blue = now here)
@@ -443,7 +539,7 @@ def layers_tab(search, tolerance, choice, blur):
         if n_periods < 2:
             st.info("The layers view needs at least two passes in this colour. Pick another colour in the sidebar.")
             return
-        picture_col, info_col = st.columns(PICTURE_COLUMNS)
+        picture_col, info_col = panel_columns("layers")
         with info_col:
             # a slider needs a range, so with exactly 2 passes we just use both
             if n_periods > 2:
@@ -513,13 +609,13 @@ def stack_tab(search, tolerance, choice):
         tracks = data["tracks"]
         scale = stk.pixel_scale_arcsec(prep["sky_ra"], prep["sky_dec"])
 
-        picture_col, info_col = st.columns(PICTURE_COLUMNS)
+        picture_col, info_col = panel_columns("stack")
         selected = 0
         with info_col:
             if tracks:
                 if st.session_state.get("stack_track", 0) > len(tracks):
                     st.session_state.stack_track = 0  # a new search with fewer tracks: keep the value in range
-                st.markdown(f"**{len(tracks)} mover track(s)** found")
+                stat_row((len(tracks), "mover tracks found"), (f"{tracks[0]['strength']:.0f}", "sigma, strongest"), small=True)
                 st.dataframe(
                     [{"Track": n, "Passes": len(t["layers"]),
                       "Pixels per pass": round(stk.measure(t, prep["period_mjds"], scale)["px_per_pass"], 1),
@@ -565,17 +661,18 @@ def stack_tab(search, tolerance, choice):
             st.caption("Scroll to zoom, drag to move, double-click to reset. Click a ring to pick that track.")
         finds = st.session_state.get("finds")
         if finds:
-            st.markdown(f"**My finds ({len(finds)})**")
-            st.dataframe(finds, hide_index=True, width="stretch")
-            keys = sorted({k for f in finds for k in f})
-            csv = "\n".join([",".join(keys)] + [",".join(str(f.get(k, "")) for k in keys) for f in finds])
-            st.download_button("Download finds (CSV)", csv, "astrodrift_finds.csv", "text/csv")
+            with st.container(key="card_finds"):
+                kicker(f"My finds ({len(finds)})")
+                st.dataframe(finds, hide_index=True, width="stretch")
+                keys = sorted({k for f in finds for k in f})
+                csv = "\n".join([",".join(keys)] + [",".join(str(f.get(k, "")) for k in keys) for f in finds])
+                st.download_button("Download finds (CSV)", csv, "astrodrift_finds.csv", "text/csv")
 
 
 @st.fragment
 def colour_tab(search, tolerance, blur):
     with cache.timed("Colour tab (fragment run)"):
-        picture_col, info_col = st.columns(PICTURE_COLUMNS)
+        picture_col, info_col = panel_columns("colour")
         with info_col:
             # The colour picture has its own patch size, and it starts at the largest one (60 arcmin).
             size = st.segmented_control("Patch size for the colour picture (arcmin)", SIZES, default=SIZES[-1],
@@ -659,7 +756,7 @@ def follow_tab(blur):
 
         # (a) flipbook with a crosshair on the predicted position
         st.markdown('<div class="section-label">Flipbook of the tracked pictures</div>', unsafe_allow_html=True)
-        picture_col, info_col = st.columns(PICTURE_COLUMNS)
+        picture_col, info_col = panel_columns("follow_flip")
         with info_col:
             if st.session_state.get("follow_i", 1) > n:
                 st.session_state.follow_i = 1  # a new search with fewer pictures: keep the slider in range
@@ -673,7 +770,7 @@ def follow_tab(blur):
 
         # (b) stack of one colour group, and (d) the honest status line
         st.markdown('<div class="section-label">Stack (median) of one colour</div>', unsafe_allow_html=True)
-        picture_col, info_col = st.columns(PICTURE_COLUMNS)
+        picture_col, info_col = panel_columns("follow_stack")
         groups = follow.colour_groups(frames["wavelengths"])
         with info_col:
             if st.session_state.get("follow_group", 0) >= len(groups):
@@ -684,7 +781,14 @@ def follow_tab(blur):
             stacked = cache.follow_stack(run_key, tuple(members), frames)
             mean_colour = float(frames["wavelengths"][members].mean())
             detected, text = follow.status_line(stacked["significance"], len(members), mean_colour)
-            st.markdown(f'<div class="status-line{" yes" if detected else ""}">{text}</div>', unsafe_allow_html=True)
+            sigma = (stacked["significance"] or {}).get("sigma")
+            fill = 0 if sigma is None else max(0.0, min(sigma / follow.DETECTION_SIGMA, 1.0)) * 100
+            headline = "<em>Detected</em>" if detected else "Not <em>detected</em>"
+            sigma_text = "no number" if sigma is None else f"{sigma:.1f} sigma"
+            st.markdown(f'<div class="card detect"><div class="headline">{headline}</div><div class="text">{text}</div>'
+                        f'<div class="bar"><div style="width:{fill:.0f}%"></div></div>'
+                        f'<div class="scale"><span>0</span><span>measured {sigma_text}</span>'
+                        f'<span>{follow.DETECTION_SIGMA:g} needed</span></div></div>', unsafe_allow_html=True)
             smooth_stack = st.toggle("Smooth the picture", value=True, key="smooth_follow_stack")
             st.caption("Median of the cutouts, each with its background removed. The object adds up in the middle; stars are in "
                        "different places in each cutout, so they smear out. The sigma number compares the middle with the "
@@ -719,26 +823,32 @@ def overview_for(search, tolerance):
 tab_flip, tab_diff, tab_layers, tab_stack, tab_colour, tab_follow = st.tabs(
     ["Flipbook", "Difference", "Layers", "Stack", "Colour", "Follow"], on_change="rerun", key="main_tabs")
 with tab_flip:
+    kicker("Flipbook · every picture in turn")
     flipbook_tab(search, tolerance, choice, blur)
 with tab_diff:
+    kicker("Difference · what changed between two passes")
     difference_tab(search, tolerance, choice, blur)
 with tab_layers:
+    kicker("Layers · passes stacked from old to new")
     if tab_layers.open:
         layers_tab(search, tolerance, choice, blur)
     else:
         keep_alive("layers_how", "layers_cutoff", "smooth_layers")
 with tab_stack:
+    kicker("Stack · one see-through layer per pass")
     if tab_stack.open:
         stack_tab(search, tolerance, choice)
     else:
         keep_alive("stack_remove", "stack_master", "stack_track",
                    *[f"stack_{kind}_{i}" for kind in ("on", "op") for i in range(prep["n_periods"])])
 with tab_colour:
+    kicker("Colour · false-colour infrared picture")
     if tab_colour.open:
         colour_tab(search, tolerance, blur)
     else:
         keep_alive("colour_pass", "smooth_colour", "colour_size")
 with tab_follow:
+    kicker("Follow · track one moving object")
     if tab_follow.open:
         follow_tab(blur)
     else:
